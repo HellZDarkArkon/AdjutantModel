@@ -12,14 +12,6 @@ enum class AdjutantState
 	SHUTDOWN
 };
 
-// Coarse operational health derived from AdjutantState.
-// Used as the integer index for <$CORE_STATE>(...) template switches.
-enum class CoreState
-{
-	STATE_OK   = 0, // all normal operational states
-	STATE_FAIL = 1  // state machine failed to initialize (UNKNOWN)
-};
-
 class AdjutantStateMachine
 {
 public:
@@ -27,22 +19,8 @@ public:
 
 	void SetState(AdjutantState newState);
 	AdjutantState GetState() const;
-	std::string GetStateName(AdjutantState state) const;
 
-	CoreState GetCoreState() const
-	{
-		switch (state)
-		{
-		case AdjutantState::BOOTING:
-		case AdjutantState::IDLE:
-		case AdjutantState::DIAGNOSTICS:
-		case AdjutantState::ALERT:
-		case AdjutantState::SHUTDOWN:
-			return CoreState::STATE_OK;
-		default:
-			return CoreState::STATE_FAIL;
-		}
-	}
+	std::string GetStateName(AdjutantState state) const;
 
 private:
 	AdjutantState state;
