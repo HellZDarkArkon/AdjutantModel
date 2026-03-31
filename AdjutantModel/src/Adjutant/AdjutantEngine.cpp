@@ -1,14 +1,354 @@
 #include "AdjutantEngine.h"
+
 #include <iostream>
+#include "../Adjutant/Speech/Voice/Vocalics/Phoneme.h"
+#include "../Engine/Framework.h"
 
-AdjutantEngine::AdjutantEngine() : upTime(0.0), init(false) 
+// Returns the GPU integer value for the first [CONST:INTENT_X] token in an encoded template string.
+static int ExtractIntentValue(const std::string& enc,
+	const std::unordered_map<std::string, int>& nameToVal)
 {
+	size_t p = enc.find("[CONST:");
+	if (p == std::string::npos) return -1;
+	size_t nameStart = p + 7;
+	size_t nameEnd = enc.find(']', nameStart);
+	if (nameEnd == std::string::npos) return -1;
+	auto it = nameToVal.find(enc.substr(nameStart, nameEnd - nameStart));
+	return (it != nameToVal.end()) ? it->second : -1;
+}
 
+// Recursively evaluates a pre-encoded fragment containing [SWITCH:X][CASE:N=...] at unlimited depth.
+// Bracket-counts to find the true matching ']' for each [CASE:N=...] so nested switches inside
+// a case value are never truncated. The matched value is fed back recursively, resolving any
+// further nesting before the result is appended.
+static std::string EvalEncoded(
+	const std::string& enc,
+	const std::unordered_map<std::string, int>& vars,
+	const std::unordered_map<std::string, std::string>& strVars)
+{
+	std::string result;
+	size_t i = 0;
+	const size_t n = enc.size();
+	std::string currentSwitch;
+	int currentSwitchValue = 0;
+	while (i < n)
+	{
+		if (enc.compare(i, 8, "[SWITCH:") == 0)
+		{
+			size_t nameStart = i + 8;
+			size_t nameEnd = enc.find(']', nameStart);
+			if (nameEnd != std::string::npos)
+			{
+				currentSwitch = enc.substr(nameStart, nameEnd - nameStart);
+				auto it = vars.find(currentSwitch);
+				currentSwitchValue = (it != vars.end()) ? it->second : 0;
+				i = nameEnd + 1;
+			}
+			else i++;
+		}
+		else if (enc.compare(i, 6, "[CASE:") == 0)
+		{
+			int bDepth = 1;
+			size_t k = i + 1;
+			while (k < n && bDepth > 0)
+			{
+				if (enc[k] == '[') bDepth++;
+				else if (enc[k] == ']') bDepth--;
+				k++;
+			}
+			size_t caseEnd = k - 1;
+			size_t numStart = i + 6;
+			size_t eq = enc.find('=', numStart);
+			if (eq != std::string::npos && eq < caseEnd)
+			{
+				int caseIdx = std::stoi(enc.substr(numStart, eq - numStart));
+				if (caseIdx == currentSwitchValue)
+					result += EvalEncoded(enc.substr(eq + 1, caseEnd - eq - 1), vars, strVars);
+			}
+			i = caseEnd + 1;
+		}
+		else if (enc.compare(i, 12, "[PRINT ENUM:") == 0)
+		{
+			size_t nameStart = i + 12;
+			size_t nameEnd = enc.find(']', nameStart);
+			if (nameEnd != std::string::npos)
+			{
+				std::string varName = enc.substr(nameStart, nameEnd - nameStart);
+				auto it = strVars.find(varName);
+				if (it != strVars.end()) result += it->second;
+				i = nameEnd + 1;
+			}
+			else i++;
+		}
+		else if (enc.compare(i, 5, "[SET:") == 0)
+		{
+			// side-effect token — produces no display text; skip to closing ']'
+			while (i < n && enc[i] != ']') i++;
+			if (i < n) i++;
+		}
+		else
+		{
+			result += enc[i++];
+		}
+	}
+	return result;
+}
+
+// Returns one string per [ARG:...] block in the encoded template, in order.
+// Each segment is fully resolved (switches, enums, \n escapes). The caller
+// inserts segment separators (e.g. 1u SOH) between entries as needed.
+static std::vector<std::string> ExtractTemplateSegments(const std::string& enc,
+	const std::unordered_map<std::string, int>& vars = {},
+	const std::unordered_map<std::string, std::string>& strVars = {})
+{
+	std::vector<std::string> segments;
+	size_t i = 0;
+	const size_t n = enc.size();
+
+	while (i < n)
+	{
+		if (enc.compare(i, 7, "[CONST:") == 0)
+		{
+			while (i < n && enc[i] != ']') i++;
+			if (i < n) i++;
+			continue;
+		}
+
+		if (enc.compare(i, 5, "[ARG:") == 0)
+		{
+			i += 5;
+			int depth = 1;
+			std::string currentSwitch;
+			int currentSwitchValue = 0;
+			std::string seg;
+
+			while (i < n && depth > 0)
+			{
+				if (enc[i] == ']')
+				{
+					depth--;
+					if (depth > 0) seg += enc[i];
+					i++;
+				}
+				else if (enc[i] == '[')
+				{
+					if (enc.compare(i, 12, "[PRINT ENUM:") == 0)
+					{
+						size_t nameStart = i + 12;
+						size_t nameEnd = enc.find(']', nameStart);
+						if (nameEnd != std::string::npos)
+						{
+							std::string varName = enc.substr(nameStart, nameEnd - nameStart);
+							auto it = strVars.find(varName);
+							if (it != strVars.end()) seg += it->second;
+							i = nameEnd + 1;
+						}
+						else { while (i < n && enc[i] != ']') i++; if (i < n) i++; }
+					}
+					else if (enc.compare(i, 8, "[SWITCH:") == 0)
+					{
+						size_t nameStart = i + 8;
+						size_t nameEnd = enc.find(']', nameStart);
+						if (nameEnd != std::string::npos)
+						{
+							currentSwitch = enc.substr(nameStart, nameEnd - nameStart);
+							auto it = vars.find(currentSwitch);
+							currentSwitchValue = (it != vars.end()) ? it->second : 0;
+							i = nameEnd + 1;
+						}
+						else { while (i < n && enc[i] != ']') i++; if (i < n) i++; }
+					}
+					else if (enc.compare(i, 6, "[CASE:") == 0)
+					{
+						int bDepth = 1;
+						size_t k = i + 1;
+						while (k < n && bDepth > 0)
+						{
+							if (enc[k] == '[') bDepth++;
+							else if (enc[k] == ']') bDepth--;
+							k++;
+						}
+						size_t caseEnd = k - 1;
+						size_t caseStart = i + 6;
+						size_t eq = enc.find('=', caseStart);
+						if (eq != std::string::npos && eq < caseEnd)
+						{
+							int caseIdx = std::stoi(enc.substr(caseStart, eq - caseStart));
+							if (caseIdx == currentSwitchValue)
+								seg += EvalEncoded(enc.substr(eq + 1, caseEnd - eq - 1), vars, strVars);
+						}
+						i = caseEnd + 1;
+					}
+					else if (enc.compare(i, 5, "[SET:") == 0 || enc.compare(i, 5, "[VAR:") == 0)
+					{
+						while (i < n && enc[i] != ']') i++;
+						if (i < n) i++;
+					}
+					else
+					{
+						// Literal '[' — e.g. the '[' in "[ADJUTANT] >"
+						depth++;
+						seg += enc[i++];
+					}
+				}
+				else if (enc[i] == '\\' && i + 1 < n && enc[i + 1] == 'n')
+				{
+					seg += '\n';
+					i += 2;
+				}
+				else
+				{
+					seg += enc[i++];
+				}
+			}
+			segments.push_back(std::move(seg));
+			continue;
+		}
+
+		i++; // skip anything outside ARG/CONST blocks
+	}
+	return segments;
+}
+
+// Joins all segments from ExtractTemplateSegments into a single string.
+// Used where the full concatenated text is needed (e.g. diagnostics).
+static std::string ExtractTemplateDisplayText(const std::string& enc,
+	const std::unordered_map<std::string, int>& vars = {},
+	const std::unordered_map<std::string, std::string>& strVars = {})
+{
+	std::string result;
+	for (const auto& seg : ExtractTemplateSegments(enc, vars, strVars)) result += seg;
+	return result;
+}
+
+void Phoneme::LoadPhonemeData(Framework& fw, std::string& filePath)
+{
+	fw.GetFileLoader().SetFilePath(filePath);
+
+	// Helper: parse one row into PhonemeData and insert into the static map.
+	// Rows with >= 11 fields are vowels; >= 16 fields also carry consonant params.
+	auto parseRow = [&](const std::vector<std::string>& row)
+	{
+		if (row.size() < 11) return;
+
+		std::string typeName = row[0];
+		typeName.erase(0, typeName.find_first_not_of(" \t"));
+		typeName.erase(typeName.find_last_not_of(" \t") + 1);
+
+		auto it = s_typeMap.find(typeName);
+		if (it == s_typeMap.end()) return;
+
+		PhonemeData data;
+		data.f1  = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 1);
+		data.f2  = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 2);
+		data.f3  = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 3);
+		data.f4  = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 4);
+		data.f5  = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 5);
+		data.bw1 = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 6);
+		data.bw2 = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 7);
+		data.bw3 = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 8);
+		data.bw4 = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 9);
+		data.bw5 = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 10);
+
+		if (row.size() >= 16) // Consonant-specific columns
+		{
+			data.noiseLevel    = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 11);
+			data.noiseFreq     = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 12);
+			data.noiseBw       = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 13);
+			data.burstDuration = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 14);
+			data.voicingRatio  = fw.GetFileLoader().ConvertSectionDataStringToDouble(row, 15);
+		}
+
+		s_phonemeData[it->second] = data;
+	};
+
+	// Vowel sections
+	for (const std::string& section : { "front", "central", "back" })
+	{
+		auto sectionData = fw.GetFileLoader().LoadSection(fw.GetFileLoader().GetFilePath(), section);
+		for (const auto& row : sectionData)
+			parseRow(row);
+	}
+
+	// Consonant sections
+	for (const std::string& section : { "nasal", "plosive", "sibaff", "affricate",
+										 "sibfric", "fricative", "approximant", "flap",
+										 "trill", "lataff", "latfric", "latapp", "latflap" })
+	{
+		auto sectionData = fw.GetFileLoader().LoadSection(fw.GetFileLoader().GetFilePath(), section);
+		for (const auto& row : sectionData)
+			parseRow(row);
+	}
+}
+
+std::string AdjutantEngine::GetGPU(Framework& fw, const std::string& filePath)
+{
+	computeList.push_back(filePath); // Add the specified compute shader file path to the list of compute shaders for GPU tasks
+	fw.GetFileLoader().SetFilePath(filePath); // Set the file path for the file loader to load the compute shader from
+	return fw.GetFileLoader().GetFilePath();
+	 // Load the compute shader file using the framework's file loader and return its contents as a string (can be used to compile the shader later
+}
+
+void AdjutantEngine::UpdateMindGPU(double Dt)
+{
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, stateBuffer); // Bind the state buffer to the shader storage buffer binding point 0 for use in the compute shader
+
+	auto run = [&](GLuint prg)
+		{
+			glUseProgram(prg); // Use the specified compute shader program for GPU tasks
+
+			auto it = deltaTimeLocs.find(prg);
+			if (it != deltaTimeLocs.end() && it->second >= 0)
+				glUniform1f(it->second, (float)Dt); // Upload the cached deltaTime location — no per-frame driver query
+
+			glDispatchCompute(1, 1, 1); // Dispatch the compute shader with a work group size of 1x1x1 (can be adjusted based on the workload and performance requirements)
+			glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); // Insert a memory barrier to ensure that all shader storage buffer writes are visible to subsequent shader invocations and CPU reads
+
+		};
+
+	run(memInfluenceProgram); // Arc 1 — Memory ? State:      prime CoreMindState from STM averages before core tick
+	run(coreProgram);         //                               CoreUpdate (idle timer)
+	run(emoProgram);          //                               EmotionUpdate (now memory-tinted)
+	run(contextProgram);      //                               ContextUpdate (now memory-tinted)
+	run(stateProgram);        //                               StateUpdate ? decisionValue from idle threshold
+	run(decProgram);          // Arc 2 — State ? Decisions:   refine decisionValue from emo × ctx pressure
+	run(brainstemProgram);    // BRAINSTEM: enforce directives on post-decision state; set captureBlocked
+	run(outputProgram);       //                               Output pass
+	run(diasemProgram);       //                               Derive intent from mind state
+	run(dianeuroProgram);     // Arc 4 — Memory ? Interpretation: STM biases tone / urgency / confidence
+	run(diainpProgram);       //                               CPU command overrides intent if present
+	run(dialogue1Program);    //                               Generate output string
+	run(memUpdateProgram);    // Arc 3 — Decisions ? Memory:  capture fully-processed state into STM
+}
+
+AdjutantEngine::AdjutantEngine() : upTime(0.0), init(false), shouldClose(false)
+{
+	phoneme = Phoneme(PhonemeType::OPEN_FRONT_UNROUNDED); // Initialize example phoneme (can be changed to test different phonemes)
+	synth = PhonemeSynth(); // Initialize the phoneme synthesizer
+	
 }
 
 AdjutantEngine::~AdjutantEngine()
 {
 	Clean();
+}
+
+void AdjutantEngine::WriteIntent(int intent)
+{
+	struct CommandInputData
+	{
+		int commandCode;
+		int arg0;
+		int arg1;
+	};
+
+	CommandInputData data;
+	data.commandCode = intent; // Set the command code to the provided intent value (this can be used by the GPU compute shaders to determine what actions or responses to generate based on the intent)
+	data.arg0 = 0; // Placeholder for additional argument 0 (can be used to pass extra information related to the intent if needed)
+	data.arg1 = 0; // Placeholder for additional argument 1 (can be used to pass extra information related to the intent if needed)
+
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, commandInputBuffer); // Bind the intent buffer as a shader storage buffer for writing the intent data
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(CommandInputData), &data); // Upload the CommandInputData structure containing the intent and any additional arguments to the intent buffer for processing by the GPU compute shaders
 }
 
 bool AdjutantEngine::Init()
@@ -19,14 +359,313 @@ bool AdjutantEngine::Init()
 	msgBus = MessageBus(); // Initialize the message bus
 	speechEngine = SpeechEngine(); // Initialize the speech engine
 	stateMachine = AdjutantStateMachine(); // Initialize the state machine
-	speechEngine.QueueLine("Adjutant online. Beginning boot sequence."); // Queue initial boot message in the speech engine
+	speechEngine.QueueLine(*this, "Adjutant online. Beginning boot sequence.");
 	if (!(stateMachine.GetStateName(stateMachine.GetState()) == "UNKNOWN")) // Check if the state machine initialized correctly
 		stateMachine.SetState(AdjutantState::BOOTING); // Transition to BOOTING state
-	else speechEngine.QueueLine("Adjutant State Machine failed to initialize."); // Queue error message if state machine failed to initialize
-	speechEngine.QueueLine("Boot sequence finalized. Adjutant online. entering Idle state."); // Queue initial status message in the speech engine
-	if(!(stateMachine.GetState() == AdjutantState::IDLE))
-		stateMachine.SetState(AdjutantState::IDLE); // Transition to IDLE state after booting
-	return true; // Return true if initialization is successful
+	else speechEngine.QueueLine(*this, "Adjutant State Machine failed to initialize.");
+	return true; // Return true if initialization i	s successful
+}
+
+void AdjutantEngine::InitGPU(Framework& fw)
+{
+	// =========================================================
+	// CORE MIND KERNEL — programs + stateBuffer (binding 0)
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this,"Initializing Core Mind Kernel...");
+
+	std::string coreSrc    = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "core");
+	std::string emoSrc     = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "emo");
+	std::string contextSrc = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "context");
+	std::string stateSrc   = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "state");
+	std::string decSrc     = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "dec");
+	std::string outputSrc  = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "output");
+
+	std::string fullSrc = fw.GetFileLoader().LoadFile(fw.GetFileLoader().GetFilePath());
+	fw.GetFileLoader().RemoveSection(fullSrc, "core");
+	fw.GetFileLoader().RemoveSection(fullSrc, "emo");
+	fw.GetFileLoader().RemoveSection(fullSrc, "context");
+	fw.GetFileLoader().RemoveSection(fullSrc, "state");
+	fw.GetFileLoader().RemoveSection(fullSrc, "dec");
+	fw.GetFileLoader().RemoveSection(fullSrc, "output");
+
+	coreProgram    = CompileCompute(fullSrc + coreSrc);
+	emoProgram     = CompileCompute(fullSrc + emoSrc);
+	contextProgram = CompileCompute(fullSrc + contextSrc);
+	stateProgram   = CompileCompute(fullSrc + stateSrc);
+	decProgram     = CompileCompute(fullSrc + decSrc);
+	outputProgram  = CompileCompute(fullSrc + outputSrc);
+
+	glGenBuffers(1, &stateBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(StateData), nullptr, GL_DYNAMIC_DRAW);
+	StateData initial = {};
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(StateData), &initial);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, stateBuffer);
+
+	// All core programs compiled + stateBuffer (binding 0) ready
+	GetSpeechEngine().QueueLine(*this, "Core Mind Kernel initialized successfully.");
+
+	// =========================================================
+	// DIALOGUE MIND KERNEL 1 — programs + buffers (bindings 1-4, 6)
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this, "Initializing Dialogue Mind Kernel 1...");
+
+	GetGPU(fw, "src/Adjutant/GPU/dialogue1.shader");
+	std::string diasemSrc    = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "diasem");
+	std::string dianeuroSrc  = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "dianeuro");
+	std::string dialogue1Src = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "dialogue1");
+	std::string diainpSrc    = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "diainp");
+
+	std::string dlgFullSrc = fw.GetFileLoader().LoadFile(fw.GetFileLoader().GetFilePath());
+	fw.GetFileLoader().RemoveSection(dlgFullSrc, "diasem");
+	fw.GetFileLoader().RemoveSection(dlgFullSrc, "dianeuro");
+	fw.GetFileLoader().RemoveSection(dlgFullSrc, "dialogue1");
+	fw.GetFileLoader().RemoveSection(dlgFullSrc, "diainp");
+
+	diasemProgram    = CompileCompute(dlgFullSrc + diasemSrc);
+	dianeuroProgram  = CompileCompute(dlgFullSrc + dianeuroSrc);
+	dialogue1Program = CompileCompute(dlgFullSrc + dialogue1Src);
+	diainpProgram    = CompileCompute(dlgFullSrc + diainpSrc);
+
+	// binding 1 — DialogueSemantic output
+	glGenBuffers(1, &dialogueBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueBuffer);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(DialogueOut), nullptr, GL_DYNAMIC_DRAW);
+	DialogueOut d{};
+	d.systemOK = 1; // system starts OK; GPU sets to 0 on INTENT_QUIT
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(DialogueOut), &d);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, dialogueBuffer);
+
+	// binding 2 — DialogueString output (GPU writes; CPU reads back each frame)
+	glGenBuffers(1, &dialogueStringBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueStringBuffer);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(U32String), nullptr, GL_DYNAMIC_READ);
+	U32String emptyStr{};
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(U32String), &emptyStr);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, dialogueStringBuffer);
+
+	// binding 3 — CommandInput (CPU writes intent; GPU reads)
+	glGenBuffers(1, &commandInputBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, commandInputBuffer);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, 3 * sizeof(GLint), nullptr, GL_DYNAMIC_DRAW);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, commandInputBuffer);
+
+	// binding 4 — DialogueTemplates (static; database1.dat)
+	glGenBuffers(1, &dialogueTemplateBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueTemplateBuffer);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, TEMPLATE_BUFFER_SIZE, nullptr, GL_STATIC_DRAW);
+
+	rawTemplates = fw.GetFileLoader().loadDatabaseSection(
+		"src/Adjutant/Speech/Database/database1.dat", "baseCommands");
+
+	BakeTemplates();
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, dialogueTemplateBuffer);
+
+	// binding 6 — DialogueInput (CPU writes text; GPU reads)
+	glGenBuffers(1, &dialogueInputBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueInputBuffer);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(U32String), nullptr, GL_DYNAMIC_DRAW);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, dialogueInputBuffer);
+
+	// All dialogue programs compiled + all dialogue buffers (bindings 1-4, 6) ready
+	GetSpeechEngine().QueueLine(*this, "Dialogue Mind Kernel 1 initialized successfully.");
+
+	// Default registered user
+	{
+		static const std::string peopleDb = "src/Adjutant/Speech/Database/targetPeople.dat";
+		auto pd = fw.GetFileLoader().loadPersonData(peopleDb, "targetpeople", "TARGET_TAHMEEPETERSEN");
+		registeredUser.name        = pd.count("TARGET_NAME")  ? pd.at("TARGET_NAME")  : "";
+		registeredUser.designation = pd.count("TARGET_ALIAS") ? pd.at("TARGET_ALIAS") : "";
+		registeredUser.targetAuth  = TargetAuthFromString(pd.count("TARGET_AUTH") ? pd.at("TARGET_AUTH") : "");
+		registeredUser.targetSex   = TargetSexFromString(pd.count("TARGET_SEX")  ? pd.at("TARGET_SEX")  : "");
+		registeredUser.profilePath = peopleDb;
+		SetUserProfile(registeredUser);
+	}
+
+	GetSpeechEngine().QueueLine(*this, "Boot sequence finalized. Adjutant online. Entering Idle state.");
+
+	// =========================================================
+	// MEMORY MIND KERNEL — programs + buffers (bindings 7-9)
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this, "Initializing Memory Mind Kernel...");
+
+	GetGPU(fw, "src/Adjutant/GPU/memory.shader");
+	std::string memInfluenceSrc = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "meminfluence");
+	std::string memUpdateSrc    = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "memupdate");
+	std::string memCaptureSrc   = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "memcapture");
+	std::string memInjectSrc    = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "meminject");
+
+	std::string memFullSrc = fw.GetFileLoader().LoadFile(fw.GetFileLoader().GetFilePath());
+	fw.GetFileLoader().RemoveSection(memFullSrc, "meminfluence");
+	fw.GetFileLoader().RemoveSection(memFullSrc, "memupdate");
+	fw.GetFileLoader().RemoveSection(memFullSrc, "memcapture");
+	fw.GetFileLoader().RemoveSection(memFullSrc, "meminject");
+
+	memInfluenceProgram = CompileCompute(memFullSrc + memInfluenceSrc);
+	memUpdateProgram    = CompileCompute(memFullSrc + memUpdateSrc);
+	memCaptureProgram   = CompileCompute(memFullSrc + memCaptureSrc);
+	memInjectProgram    = CompileCompute(memFullSrc + memInjectSrc);
+
+	// binding 7 — MemoryCommand (CPU writes command/slot/time/date; GPU consumes and resets)
+	{
+		struct { int cmd, slot, tc, dc; } mCmd{};
+		glGenBuffers(1, &memCommandBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, memCommandBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(mCmd), &mCmd, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, memCommandBuffer);
+	}
+
+	// binding 8 — MemoryData: header (4 ints) + 64 × GPUMemoryEntry (12 × 4 bytes each)
+	{
+		constexpr GLsizeiptr MEM_DATA_SIZE = 4 * sizeof(GLint) + 64 * 12 * sizeof(GLfloat);
+		glGenBuffers(1, &memDataBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, memDataBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, MEM_DATA_SIZE, nullptr, GL_DYNAMIC_DRAW);
+		glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, nullptr);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, memDataBuffer);
+	}
+
+	// binding 9 — MemoryRuntime: 11 floats + 5 ints = 64 bytes
+	{
+		constexpr GLsizeiptr MEM_RT_SIZE = 16 * sizeof(GLfloat);
+		glGenBuffers(1, &memRuntimeBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, memRuntimeBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, MEM_RT_SIZE, nullptr, GL_DYNAMIC_DRAW);
+		glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, nullptr);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, memRuntimeBuffer);
+	}
+
+	// All memory programs compiled + memory buffers (bindings 7-9) ready
+	GetSpeechEngine().QueueLine(*this, "Memory Mind Kernel initialized successfully.");
+
+	// =========================================================
+	// BRAINSTEM KERNEL — programs + buffers (bindings 10-11)
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this, "Initializing Brainstem Kernel...");
+
+	GetGPU(fw, "src/Adjutant/GPU/brainstem.shader");
+	std::string brainstemSrc     = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "brainstem");
+	std::string brainstemEditSrc = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "brainstemedit");
+
+	std::string bsFullSrc = fw.GetFileLoader().LoadFile(fw.GetFileLoader().GetFilePath());
+	fw.GetFileLoader().RemoveSection(bsFullSrc, "brainstem");
+	fw.GetFileLoader().RemoveSection(bsFullSrc, "brainstemedit");
+
+	brainstemProgram     = CompileCompute(bsFullSrc + brainstemSrc);
+	brainstemEditProgram = CompileCompute(bsFullSrc + brainstemEditSrc);
+
+	brainstemMgr.LoadDirectives("src/Adjutant/Brainstem/brainstem.bsm");
+	brainstemMgr.SetSessionAuth(registeredUser.targetAuth);
+
+	// binding 10 — BrainstemData: header (4 ints) + MAX_DIRECTIVES × BrainstemDirective (32 bytes each)
+	{
+		constexpr GLsizeiptr BS_DATA_SIZE = 4 * sizeof(GLint) + 32 * sizeof(BrainstemDirective);
+		glGenBuffers(1, &brainstemBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, brainstemBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, BS_DATA_SIZE, nullptr, GL_DYNAMIC_DRAW);
+		glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, nullptr);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, brainstemBuffer);
+		brainstemMgr.PushToGPU(brainstemBuffer);
+	}
+
+	// binding 11 — BrainstemEditCmd: 12 fields × 4 bytes = 48 bytes
+	{
+		struct GPUBrainstemEditCmd
+		{
+			int   bsEditActive = 0, bsTargetId = 0, bsNewCondType = 0;
+			float bsNewThreshold = 0.0f;
+			int   bsNewMinAuth = 0, bsNewLockFlags = 0, bsNewActionType = 0;
+			float bsNewActionParam = 0.0f;
+			int   bsNewActive = 0, bsEditAuthLevel = 0, bsEditPad0 = 0, bsEditPad1 = 0;
+		} bsEdit{};
+		glGenBuffers(1, &brainstemEditBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, brainstemEditBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(bsEdit), &bsEdit, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, brainstemEditBuffer);
+	}
+
+	GetSpeechEngine().QueueLine(*this, "Brainstem Kernel initialized. Core directives active.");
+
+	// Cache deltaTime uniform locations once — avoids per-frame glGetUniformLocation driver overhead
+	// that would otherwise inflate DELTA_t measurements on the CPU
+	deltaTimeLocs[coreProgram]          = glGetUniformLocation(coreProgram,          "deltaTime");
+	deltaTimeLocs[emoProgram]           = glGetUniformLocation(emoProgram,           "deltaTime");
+	deltaTimeLocs[contextProgram]       = glGetUniformLocation(contextProgram,       "deltaTime");
+	deltaTimeLocs[stateProgram]         = glGetUniformLocation(stateProgram,         "deltaTime");
+	deltaTimeLocs[decProgram]           = glGetUniformLocation(decProgram,           "deltaTime");
+	deltaTimeLocs[outputProgram]        = glGetUniformLocation(outputProgram,        "deltaTime");
+	deltaTimeLocs[diasemProgram]        = glGetUniformLocation(diasemProgram,        "deltaTime");
+	deltaTimeLocs[dianeuroProgram]      = glGetUniformLocation(dianeuroProgram,      "deltaTime");
+	deltaTimeLocs[dialogue1Program]     = glGetUniformLocation(dialogue1Program,     "deltaTime");
+	deltaTimeLocs[diainpProgram]        = glGetUniformLocation(diainpProgram,        "deltaTime");
+	deltaTimeLocs[memInfluenceProgram]  = glGetUniformLocation(memInfluenceProgram,  "deltaTime");
+	deltaTimeLocs[memUpdateProgram]     = glGetUniformLocation(memUpdateProgram,     "deltaTime");
+	deltaTimeLocs[memCaptureProgram]    = glGetUniformLocation(memCaptureProgram,    "deltaTime");
+	deltaTimeLocs[memInjectProgram]     = glGetUniformLocation(memInjectProgram,     "deltaTime");
+	deltaTimeLocs[brainstemProgram]     = glGetUniformLocation(brainstemProgram,     "deltaTime");
+	deltaTimeLocs[brainstemEditProgram] = glGetUniformLocation(brainstemEditProgram, "deltaTime");
+}
+
+void AdjutantEngine::BakeTemplates()
+{
+	static const std::unordered_map<std::string, int> intentNameToValue =
+	{
+		{"INTENT_NONE",          0}, {"INTENT_STATUS",        1},
+		{"INTENT_IDLE_CHECK",    2}, {"INTENT_ACTION_FLAG",   3},
+		{"INTENT_CONTEXT_SHIFT", 4}, {"INTENT_UPTIME",        5},
+		{"INTENT_HELP",          6}, {"INTENT_QUIT",          7},
+		{"INTENT_PHONEME",       8}
+	};
+
+	const std::unordered_map<std::string, int> vars =
+	{
+		{"TARGET_AUTH", currentTarget.targetAuth},
+		{"TARGET_SEX",  currentTarget.targetSex},
+		{"CORE_STATE",  static_cast<int>(stateMachine.GetCoreState())}
+	};
+
+	const std::unordered_map<std::string, std::string> strVars =
+	{
+		{"TARGET_TITLE", TargetTitle(currentTarget.targetAuth, currentTarget.targetSex)},
+		{"CORE_STATE",   stateMachine.GetStateName(stateMachine.GetState())},
+		{"CORE_UPTIME",  std::to_string(static_cast<int>(upTime))}
+	};
+
+	struct TemplateBuffer { int offsets[128]; uint32_t data[8192]; } tbuf{};
+	for (int j = 0; j < 128; j++) tbuf.offsets[j] = -1;
+	int cursor = 0;
+
+	for (const std::string& enc : rawTemplates)
+	{
+		int intentVal = ExtractIntentValue(enc, intentNameToValue);
+		if (intentVal < 0 || intentVal >= 128 || cursor >= 8190) continue;
+
+		auto segments = ExtractTemplateSegments(enc, vars, strVars);
+		if (segments.empty()) continue;
+		tbuf.offsets[intentVal] = cursor;
+		for (size_t si = 0; si < segments.size(); si++)
+		{
+			if (si > 0) { if (cursor >= 8190) break; tbuf.data[cursor++] = 1u; }
+			for (unsigned char ch : segments[si])
+			{
+				if (cursor >= 8190) break;
+				tbuf.data[cursor++] = static_cast<uint32_t>(ch);
+			}
+		}
+		tbuf.data[cursor++] = 0u;
+	}
+
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueTemplateBuffer);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(tbuf), &tbuf);
+	lastBakedCoreState = stateMachine.GetCoreState();
+}
+
+void AdjutantEngine::SetTargetProfile(const TargetProfile& p)
+{
+	currentTarget = p;
+	brainstemMgr.SetSessionAuth(p.targetAuth);
+	if (brainstemBuffer != 0) brainstemMgr.PushToGPU(brainstemBuffer); // sync session auth to GPU
+	BakeTemplates();
 }
 
 void AdjutantEngine::Update(double DELTA_t)
@@ -34,8 +673,31 @@ void AdjutantEngine::Update(double DELTA_t)
 	if (!init) return; // Don't update if not initialized
 
 	upTime += DELTA_t; // Increment up time by the delta time
+
+	if (stateMachine.GetState() == AdjutantState::BOOTING && !speechEngine.HasLine())
+		stateMachine.SetState(AdjutantState::IDLE); // Boot speech drained — open input
+
+	if (stateMachine.GetCoreState() != lastBakedCoreState)
+		BakeTemplates(); // re-bake before GPU tick when operational health changes
+
+	//Update GPU logic for the AI OS
+	UpdateMindGPU(DELTA_t);
+
+	// Read back DialogueSemantic (binding 1) to detect GPU-side shutdown signal
+	{
+		DialogueOut dOut{};
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueBuffer);
+		glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(DialogueOut), &dOut);
+		if (dOut.systemOK == 0)
+		{
+			SetShouldClose(true);
+			dOut.systemOK = 1; // reset so it doesn't fire again before shutdown completes
+			glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(DialogueOut), &dOut);
+		}
+	}
+
 	// Update AI OS logic here
-	if (upTime > 5.0 && stateMachine.GetState() == AdjutantState::IDLE) // Example logic: Transition to DIAGNOSTICS state after 5 seconds in IDLE
+	if (upTime > 5.0 && stateMachine.GetState() == AdjutantState::IDLE)
 	{
 		stateMachine.SetState(AdjutantState::DIAGNOSTICS); // Transition to DIAGNOSTICS state after 5 seconds in IDLE
 	}
@@ -60,37 +722,71 @@ std::string AdjutantEngine::GetStatus() const
 		return "State: " + stateMachine.GetStateName(stateMachine.GetState()) + " | Uptime: " + std::to_string(upTime);
 }
 
-void AdjutantEngine::ProcessCommand(const std::string& cmd)
+void AdjutantEngine::ProcessDialogue(const DialogueOut& d)
 {
-	// implement here.
+	switch (d.intent)
+	{
+		case 0: // Greeting intent
+			break;
+	}
+}
 
-	if (cmd == "status")
+void AdjutantEngine::ProcessSpeech(const std::string& text, bool tts)
+{
+	if (!tts)
 	{
-		speechEngine.QueueLine("Adjutant online.");
-		speechEngine.QueueLine("Current State: " + stateMachine.GetStateName(stateMachine.GetState()));
-		if (!(stateMachine.GetStateName(stateMachine.GetState()) == "UNKNOWN"))
-			speechEngine.QueueLine("All systems nominal.");
-		else
-			speechEngine.QueueLine("State machine failed to initialize. Diagnostics recommended.");
-	}
-	else if (cmd == "uptime")
-	{
-		speechEngine.QueueLine("Uptime: " + std::to_string(upTime) + " seconds.");
-	}
-	else if (cmd == "help")
-	{
-		speechEngine.QueueLine("Currently available commands: 'status', 'uptime', 'help'.");
-	}
-	else if (cmd == "quit")
-	{
-		speechEngine.QueueLine("Affirmative.");
-		speechEngine.QueueLine("Entering sleep mode. Goodbye.");
-
-		SetShouldClose(true); // Signal the engine to shut down
+		GetSpeechEngine().QueueLine(*this, text); // If tts is false, treat the text as a line to be spoken by the speech engine and queue it in the speech engine's GPU dialogue buffer for processing and output
 	}
 	else
 	{
-		speechEngine.QueueLine("Unrecognized command: " + cmd);
+		GetSpeechEngine().QueueLine(*this, text); // still queue the text to send to the GPU buffer
+		// do TTS processing here if implemented, such as generating phoneme data from the text and sending it to the GPU for synthesis, or using a separate TTS engine to generate audio data from the text and sending that to the voice output engine
 	}
-		
+}
+
+void AdjutantEngine::ProcessCommand(const std::string& cmd)
+{
+	std::string lower = cmd;
+	std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+	// Profile commands — CPU-only, no GPU dispatch
+	if (lower.rfind("identify auth ", 0) == 0)
+	{
+		try
+		{
+			TargetProfile p = currentTarget;
+			p.targetAuth = std::stoi(lower.substr(14));
+			SetTargetProfile(p);
+		}
+		catch (...) {}
+		return;
+	}
+	if (lower.rfind("identify sex ", 0) == 0)
+	{
+		try
+		{
+			TargetProfile p = currentTarget;
+			p.targetSex = std::stoi(lower.substr(13));
+			SetTargetProfile(p);
+		}
+		catch (...) {}
+		return;
+	}
+
+	// TTS test command — CPU-only, no GPU dispatch
+	// Usage: play <word>  or  play <phrase>
+	if (lower.rfind("play ", 0) == 0)
+	{
+		std::string text = cmd.substr(5); // preserve original case; dictionary lookup is case-insensitive
+		if (!text.empty())
+			GetSpeechEngine().QueueLine(*this, text);
+		return;
+	}
+
+	WriteDialogueInput(cmd);
+
+	int intent = LookupIntent(lower);
+	if (intent == INTENT_UPTIME)
+		BakeTemplates(); // snapshot current uptime into the pre-baked template
+	WriteIntent(intent);
 }
