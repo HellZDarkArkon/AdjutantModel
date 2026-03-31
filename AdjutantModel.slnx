@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="AdjutantModel/AdjutantModel.vcxproj" />
+  <Project Path="AdjutantModel/AdjutantModel.vcxproj" Id="ce41f81c-1d5d-4f1a-bdcc-aba7f5cdd2c5" />
 </Solution>
