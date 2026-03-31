@@ -3,227 +3,22 @@
 
 #include <string>
 #include <vector>
-#include <optional>
-#include <variant>
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
-#include <iostream>
-#include <unordered_map>
 
 #include "MessageBus.h"
 #include "StateMachine.h"
 #include "Speech/SpeechEngine.h"
-#include "Speech/Voice/Vocalics/PhonemeSynth.h"
-#include "TargetProfile.h"
-#include "UserProfile.h"
-#include "Brainstem/BrainstemManager.h"
-
-class Framework; // Forward declaration of the Framework class to avoid circular dependency
-
-struct StateData
-{
-	float idleTimer;
-	float emoState;
-	float contextState;
-	float decValue;
-};
-struct DialogueOut
-{
-	int intent;
-	float tone;
-	float urgency;
-	float confidence;
-	int systemOK; // GPU sets to 0 when INTENT_QUIT fires; CPU reads back to trigger shutdown
-};
-
-struct U32String
-{
-	int length;
-	uint32_t codepoints[1024]; // Fixed-size array — must match DialogueString.text[1024] in dialogue1.shader
-};
-
-inline const std::string ADJUTANT_TAG = "[ADJUTANT] > "; // Global prefix for all Adjutant system messages
 
 class AdjutantEngine
 {
-	static constexpr GLsizeiptr TEMPLATE_BUFFER_SIZE = (128 * sizeof(GLint)) + (8192 * sizeof(GLuint)); // Size of the DialogueTemplates SSBO: 128 int offsets + 8192 uint data entries
 	public:
 	AdjutantEngine();
 	~AdjutantEngine();
 
 	bool Init(); // Initialize AI OS engine
-	void InitGPU(Framework& fw); // Initialize GPU subsystem for GPU compute tasks
-	void UpdateMindGPU(double Dt); // Update AI OS logic related to GPU tasks
-
 	void Update(double DELTA_t); // Update engine logic with time step
 	void Clean(); // Clean up resources
 
-	uint32_t HashString(const std::string& s)
-	{
-		uint32_t h = 2166136261u; // FNV-1a 32-bit hash initial value
-		for (unsigned char c : s)
-		{
-			h ^= c; // XOR the byte with the hash
-			h *= 16777619u; // Multiply by the FNV prime
-		}
-		return h;
-	}
-
-	void ReadDialogueStringBuffer(DialogueOut& d)
-	{
-		U32String gpuOut{};
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueStringBuffer);
-		glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(U32String), &gpuOut); // Read the data from the dialogue string buffer into the gpuOut structure
-
-		if (gpuOut.length > 0)
-		{
-			const auto flush = [&](std::string& seg)
-			{
-				if (!seg.empty())
-				{
-					GetSpeechEngine().QueueLine(*this, seg); // one push per ' - ' separated segment
-					seg.clear();
-				}
-			};
-
-			std::string seg;
-			seg.reserve(gpuOut.length);
-
-			for (int i = 0; i < gpuOut.length; i++)
-			{
-				uint32_t cp = gpuOut.codepoints[i];
-
-				if (cp == 1u) // segment separator inserted by BakeTemplates between [ARG:] blocks
-				{
-					flush(seg);
-					continue;
-				}
-
-				if (cp <= 0x7F)
-					seg.push_back(static_cast<char>(cp)); // 1-byte character (ASCII)
-				else if (cp <= 0x7FF)
-				{
-					seg.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F))); // First byte of 2-byte character
-					seg.push_back(static_cast<char>(0x80 | (cp & 0x3F))); // Second byte of 2-byte character
-				}
-				else if (cp <= 0xFFFF)
-				{
-					seg.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F))); // First byte of 3-byte character
-					seg.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F))); // Second byte of 3-byte character
-					seg.push_back(static_cast<char>(0x80 | (cp & 0x3F))); // Third byte of 3-byte character
-				}
-				else
-				{
-					seg.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07))); // First byte of 4-byte character
-					seg.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F))); // Second byte of 4-byte character
-					seg.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F))); // Third byte of 4-byte character
-					seg.push_back(static_cast<char>(0x80 | (cp & 0x3F))); // Fourth byte of 4-byte character
-				}
-			}
-			flush(seg); // flush the final segment
-		}
-	}
-
-	void WriteDialogueInput(const std::string& text)
-	{
-		U32String u32 = GetU32String(text, 256);
-
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, dialogueInputBuffer);
-		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(U32String), &u32);
-	}
-
-	U32String GetU32String(const std::string& s, int maxCnt)
-	{
-		U32String out{};
-		out.length = 0; // Initialize length to 0
-
-		const unsigned char* bytes = reinterpret_cast<const unsigned char*>(s.data()); // Get the bytes of the input string
-		int size = static_cast<int>(s.size()); // Get the size of the input string in bytes
-		int i = 0;
-
-		while (i < size && out.length < maxCnt)
-		{
-			uint32_t cp = 0;
-			unsigned char c = bytes[i];
-
-			if (c < 0x80)
-			{
-				cp = c;
-				i += 1; // 1-byte character (ASCII)
-			}
-			else if ((c >> 5) == 0x6)
-			{
-				if (i + 1 >= size) break; // Check for valid continuation byte
-				cp = ((c & 0x1F) << 6) |
-					(bytes[i + 1] & 0x3F); // 2-byte character
-				i += 2; // Move to the next character
-			}
-			else if ((c >> 4) == 0xE)
-			{
-				if (i + 2 >= size) break; // Check for valid continuation bytes
-				cp = ((c & 0x0F) << 12) |
-					((bytes[i + 1] & 0x3F) << 6) |
-					(bytes[i + 2] & 0x3F); // 3-byte character
-				i += 3; // Move to the next character
-			}
-			else if ((c >> 3) == 0x1E)
-			{
-				if (i + 3 >= size) break; // Check for valid continuation bytes
-				cp = ((c & 0x07) << 18) |
-					((bytes[i + 1] & 0x3F) << 12) |
-					((bytes[i + 2] & 0x3F) << 6) |
-					(bytes[i + 3] & 0x3F); // 4-byte character
-				i += 4; // Move to the next character
-			}
-			else
-			{
-				cp = 0xFFFD; // Invalid byte sequence, use replacement character
-				i += 1; // Move to the next byte
-			}
-
-			out.codepoints[out.length++] = cp; // Store the decoded Unicode code point in the output structure and increment the length
-		}
-
-		return out; // Return the structure containing the decoded Unicode code points and their count
-	}
-
-	static GLuint CompileCompute(const std::string& src)
-	{
-		GLuint shader = glCreateShader(GL_COMPUTE_SHADER); // Create an OpenGL compute shader object
-		const char* ptr = src.c_str(); // Get C-style string from the source code string
-		glShaderSource(shader, 1, &ptr, nullptr); // Set the source code for the compute shader
-		glCompileShader(shader); // Compile the compute shader
-
-		GLint ok;
-		glGetShaderiv(shader, GL_COMPILE_STATUS, &ok); // Check if compilation was successful
-		if (!ok)
-		{
-			char log[2048];
-			glGetShaderInfoLog(shader, 2048, nullptr, log); // Get the compilation error log
-			std::cerr << "Compute shader compilation failed: " << log << std::endl; // Print the error log to the console
-		}
-
-		GLuint prg = glCreateProgram(); // Create an OpenGL program object
-		glAttachShader(prg, shader); // Attach the compiled compute shader to the program
-		glLinkProgram(prg); // Link the program to create an executable for the compute shader
-		glDeleteShader(shader); // Delete the shader object after linking since it's no longer needed
-
-		return prg;
-
-	}
-
-	void WriteIntent(int intent);
-	void BakeTemplates();
-	void SetTargetProfile(const TargetProfile& p);
-	const TargetProfile& GetTargetProfile() const { return currentTarget; }
-	void SetUserProfile(const UserProfile& u) { registeredUser = u; SetTargetProfile(u); }
-	const UserProfile& GetUserProfile() const { return registeredUser; }
-
-	std::string GetGPU(Framework& fw, const std::string& filePath); // Load GPU compute shader from file
-
-	void ProcessCommand(const std::string& cmd);
-	void ProcessDialogue(const DialogueOut& d); // Process dialogue output data from the dialogue compute shader and generate appropriate responses or actions based on the intent, tone, urgency and confidence values
-	void ProcessSpeech(const std::string& text, bool tts); // Process speech output, if tts is false, the text is treated as a line to be spoken by the speech engine, if tts is true, the text is treated as raw text to be synthesized into speech using the phoneme synthesizer (this can be used for testing the phoneme synthesizer with custom input)
+	void ProcessCommand(const std::string& cmd); // Process a command input
 
 	std::string GetStatus() const;
 
@@ -234,118 +29,12 @@ class AdjutantEngine
 	SpeechEngine& GetSpeechEngine() { return speechEngine; } // Accessor for the speech engine
 	bool GetShouldClose() const { return shouldClose; } // Accessor for the shutdown flag
 private:
-	std::vector<std::string> computeList; // List of compute shader file paths for GPU tasks
 	double upTime; // Total time since engine start
 	bool init; // Flag to indicate if engine is initialized
 	MessageBus msgBus; // Message bus for inter-subsystem communication
 	AdjutantStateMachine stateMachine; // State machine to manage engine states
 	SpeechEngine speechEngine; // Speech engine for handling dialogue
 	bool shouldClose; // Flag to indicate if the engine should shut down
-	std::optional<Phoneme> phoneme; // Example phoneme for testing the phoneme synthesizer
-	PhonemeSynth synth; // Phoneme synthesizer for generating audio from phonemes
-	TargetProfile currentTarget;
-	UserProfile registeredUser;
-	std::vector<std::string> rawTemplates;
-	CoreState lastBakedCoreState = CoreState::STATE_OK;
-	
-	
-	GLuint coreProgram = 0; // OpenGL program object for the core compute shader set to 0 as a placeholder until initialized
-	GLuint emoProgram = 0; // OpenGL program object for the emotion compute shader set to 0 as a placeholder until initialized
-	GLuint contextProgram = 0; // OpenGL program object for the context compute shader set to 0 as a placeholder until initialized
-	GLuint stateProgram = 0; // OpenGL program object for the state compute shader set to 0 as a placeholder until initialized
-	GLuint decProgram = 0; // OpenGL program object for the decision compute shader set to 0 as a placeholder until initialized
-	GLuint outputProgram = 0; // OpenGL program object for the output compute shader set to 0 as a placeholder until initialized
-	GLuint diasemProgram = 0;    // OpenGL program object for the dialogue semantic compute shader
-	GLuint dianeuroProgram = 0;  // OpenGL program object for the dialogue personality/memory compute shader
-	GLuint dialogue1Program = 0; // OpenGL program object for the dialogue string compute shader
-	GLuint diainpProgram = 0;    // OpenGL program object for the dialogue input compute shader
-
-	// Memory Mind Kernel programs (bindings 7-9)
-	GLuint memInfluenceProgram = 0; // Arc 1 — Memory → State: primes CoreMindState from STM averages each frame
-	GLuint memUpdateProgram    = 0; // Arc 3 — per-frame STM pipeline: temporal integration, salience, auto-capture
-	GLuint memCaptureProgram   = 0; // CPU-triggered manual capture
-	GLuint memInjectProgram    = 0; // CPU-triggered state injection from a stored entry
-
-	GLuint stateBuffer = 0; // OpenGL SSBO ID for state data set to 0 as a placeholder until initialized
-	GLuint dialogueBuffer = 0; // OpenGL SSBO ID for dialogue output data set to 0 as a placeholder until initialized
-	GLuint commandInputBuffer = 0; // OpenGL SSBO ID for command input data set to 0 as a placeholder until initialized
-	GLuint dialogueTemplateBuffer = 0; // OpenGL SSBO ID for dialogue template data set to 0 as a placeholder until initialized
-	GLuint dialogueStringBuffer = 0; // OpenGL SSBO ID for dialogue string data set to 0 as a placeholder until initialized
-	GLuint dialogueInputBuffer = 0; // OpenGL SSBO ID for dialogue input data set to 0 as a placeholder until initialized
-
-	// Memory Mind Kernel SSBOs
-	GLuint memCommandBuffer = 0; // binding 7 — MemoryCommand: CPU writes command/slot/time/date codes
-	GLuint memDataBuffer    = 0; // binding 8 — MemoryData: STM ring buffer (64 entries)
-	GLuint memRuntimeBuffer = 0; // binding 9 — MemoryRuntime: temporal averages, scores, flags
-
-	// Brainstem Kernel programs (bindings 10-11)
-	GLuint brainstemProgram     = 0; // #brainstem — per-frame directive enforcement
-	GLuint brainstemEditProgram = 0; // #brainstemedit — CPU-triggered edit validation
-
-	// Brainstem Kernel SSBOs
-	GLuint brainstemBuffer     = 0; // binding 10 — BrainstemData (directives + session auth + version)
-	GLuint brainstemEditBuffer = 0; // binding 11 — BrainstemEditCmd (incoming edit request)
-
-	BrainstemManager brainstemMgr;
-	std::unordered_map<GLuint, GLint> deltaTimeLocs; // Cached deltaTime uniform locations per program — populated once in InitGPU
-
-
-	enum IntentCode
-	{
-		INTENT_NONE     = 0, // CMD_NONE   = 0
-		INTENT_STATUS   = 1, // CMD_STATUS = 1
-		INTENT_HELP     = 2, // CMD_HELP   = 2
-		INTENT_UPTIME   = 3, // CMD_UPTIME = 3
-		INTENT_QUIT     = 4, // CMD_QUIT   = 4
-		INTENT_PHONEME  = 5, // CMD_PLAYX  = 5
-	};
-
-	std::unordered_map<std::string, IntentCode> intentMap =
-	{
-		{"status", INTENT_STATUS},
-		{"uptime", INTENT_UPTIME},
-		{"help", INTENT_HELP},
-		{"quit", INTENT_QUIT},
-
-		{"play a1", INTENT_PHONEME},
-		{"play a2", INTENT_PHONEME},
-		{"play a3", INTENT_PHONEME},
-		{"play e1", INTENT_PHONEME},
-		{"play e2", INTENT_PHONEME},
-		{"play e3", INTENT_PHONEME},
-		{"play i1", INTENT_PHONEME},
-		{"play i2", INTENT_PHONEME},
-		{"play i3", INTENT_PHONEME},
-		{"play o1", INTENT_PHONEME},
-		{"play o2", INTENT_PHONEME},
-		{"play o3", INTENT_PHONEME},
-		{"play u1", INTENT_PHONEME},
-		{"play u2", INTENT_PHONEME},
-		{"play u3", INTENT_PHONEME},
-		{"play y1", INTENT_PHONEME},
-		{"play y2", INTENT_PHONEME}
-	};
-
-
-public:
-	GLuint GetCommandInputBuffer() const { return commandInputBuffer; } // Accessor for the command input buffer
-
-	void SetCommandInputBuffer(GLuint buffer) { commandInputBuffer = buffer; } // Mutator for the command input buffer
-
-	int LookupIntent(const std::string& cmd)
-	{
-		std::string lower = cmd;
-		std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-
-		auto it = intentMap.find(lower);
-		if (it != intentMap.end())
-			return it->second; // Return the intent code if found in the map
-		else
-			return INTENT_NONE; // Return INTENT_NONE if the command is not recognized
-	}
-
-	
-
 };
 
 #endif

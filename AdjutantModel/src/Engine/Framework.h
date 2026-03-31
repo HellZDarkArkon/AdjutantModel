@@ -5,12 +5,8 @@
 #include <iostream>
 #include <chrono>
 
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
-
 #include "../Adjutant/AdjutantEngine.h"
 #include "../Adjutant/CommandSystem.h"
-#include "FileLoader.h"
 
 using namespace std;
 
@@ -24,10 +20,6 @@ public:
 	void Run();
 	void Clean();
 
-	FileLoader& GetFileLoader(){ return fl; } // Accessor for the file loader
-
-	void SetFileLoader(const FileLoader& fileLoader) { fl = fileLoader; } // Mutator for the file loader
-
 private:
 	// Timing
 	chrono::high_resolution_clock::time_point lastFrameTime;
@@ -36,9 +28,7 @@ private:
 	CommandSystem cmdSystem;
 	double baseCooldown; // Base cooldown for speech output
 	double speechCooldown; // Combined cooldown for speech output, including any additional time from the last spoken line
-	double pcmCooldown; // Cooldown for processing PCM messages to allow synchronization with text output and prevent overlapping audio
 	std::string inputBuffer; // Buffer to hold user input for commands
-	FileLoader fl; // File loader for loading configuration files, dialogue scripts, etc.
 
 	// Adjutant Model Subsystems
 
@@ -56,16 +46,11 @@ public:
 	double GetDeltaTime() const { return DELTA_t; }
 	AdjutantEngine& GetAdjutantEngine() { return adjModel; }
 	CommandSystem& GetCommandSystem() { return cmdSystem; }
-	double GetBaseCooldown() const { return baseCooldown; }
-	double GetSpeechCooldown() const { return speechCooldown; }
-	double GetPCMCooldown() const { return pcmCooldown; }
 
 	void SetRunning(bool running) { isRunning = running; }
 	void SetDeltaTime(double deltaTime) { DELTA_t = deltaTime; }
+	void SetAdjutantEngine(const AdjutantEngine& engine) { adjModel = engine; }
 	void SetCommandSystem(const CommandSystem& cmdSys) { cmdSystem = cmdSys; }
-	void SetBaseCooldown(double cooldown) { baseCooldown = cooldown; }
-	void SetSpeechCooldown(double cooldown) { speechCooldown = cooldown; }
-	void SetPCMCooldown(double cooldown) { pcmCooldown = cooldown; }
 };
 
 #endif // FRAMEWORK_H

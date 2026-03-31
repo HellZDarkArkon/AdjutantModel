@@ -3,13 +3,7 @@
 
 #include <string>
 #include <vector>
-#include "Voice/VoiceOutputEngine.h"
-#include "BeepSynth.h"
-#include "Voice/Language/LanguageDictionary.h"
-#include "Voice/Vocalics/PhonemeSynth.h"
-#include "Voice/Vocalics/FootParser.h"
-
-class AdjutantEngine; // Forward declaration of the AdjutantEngine class to avoid circular dependency
+#include "VoiceOutputEngine.h"
 
 class SpeechEngine
 {
@@ -17,35 +11,14 @@ public:
 	SpeechEngine();
 	~SpeechEngine();
 
-	SpeechEngine(const SpeechEngine&)            = delete;
-	SpeechEngine& operator=(const SpeechEngine&) = delete;
-
-	SpeechEngine(SpeechEngine&& other) noexcept            = default;
-	SpeechEngine& operator=(SpeechEngine&& other) noexcept = default;
-
-	void QueueLine(AdjutantEngine& adj, const std::string& line); // Add a line of dialogue to the queue
-	void QueuePCM(const std::vector<int16_t>& pcmData); // Add raw PCM audio data to the queue (if needed)
-	void Clean(); // Clean up resources used by the speech engine
+	void QueueLine(const std::string& line); // Add a line of dialogue to the queue
 	bool HasLine() const; // Check if there are lines in the queue
 	std::string PopLine(); // Get the next line of dialogue from the queue
 	VoiceOutputEngine& GetVoiceOutput() { return voiceOutput; } // Accessor for the voice output engine
 
-	void LoadLanguage(const std::string& dictPath);
-	double SpeakLine(const std::string& text, VoiceOutputEngine& vo);
-	double PlayBeep(BeepType type, VoiceOutputEngine& vo);
-
 private:
 	std::vector<std::string> queue; // Queue to hold lines of dialogue
-	std::vector<int16_t> pcmQueue; // Queue to hold PCM audio data (if needed)
 	VoiceOutputEngine voiceOutput; // Voice output engine to speak lines
-
-	LanguageDictionary mDict;
-	PhonemeSynth       mSynth;
-	SyllableBuilder    mSyllableBuilder;
-	FootParser         mFootParser;
-	MoraicGrid         mMoraicGrid;
-	IntonationModel    mIntonationModel;
-	bool               mLanguageLoaded = false;
 };
 
 #endif // SPEECH_ENGINE_H

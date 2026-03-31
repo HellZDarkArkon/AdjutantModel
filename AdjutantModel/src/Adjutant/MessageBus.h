@@ -3,12 +3,11 @@
 
 #include <string>
 #include <vector>
-#include <variant>
 
 struct Message
 {
 	std::string type;
-	std::variant<std::string, std::vector<int16_t>> payload; // Payload can be a string (for text messages) or a vector of int16_t (for PCM audio data)
+	std::string payload;
 };
 
 class MessageBus
@@ -16,12 +15,10 @@ class MessageBus
 public:
 	MessageBus() = default;
 	void Send(const Message& msg);
-	
 	std::vector<Message> Fetch();
 
 private:
-	std::vector<Message> queue; // Queue to hold Messages
-	
+	std::vector<Message> queue; // Simple in-memory message queue
 };
 
 #endif // MSGBUS_H
