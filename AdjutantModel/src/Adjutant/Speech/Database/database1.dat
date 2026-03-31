@@ -1,0 +1,7 @@
+#baseCommands
+
+INTENT_NONE | 
+INTENT_STATUS EMOTION_NEUTRAL BOOL_SYSTEM_OK CORE_STATE |  Adjutant online. - Current status: <CORE_STATE>. - <$CORE_STATE>(All systems nominal. || State machine has failed to intialize - Diagnostics recommended.)
+INTENT_UPTIME EMOTION_NEUTRAL CORE_UPTIME |  All systems nominal. - I have been online for <CORE_UPTIME> seconds.
+INTENT_HELP EMOTION_NEUTRAL TARGET_AUTH TARGET_SEX |  Hello, <$TARGET_AUTH>(<$TARGET_SEX>(sir || ma'am) || Private || Colonel || Lieutenant || Sergeant || Corporal || Captain || Major || General || Admiral). I am Adjutant-0001x-TEST, a private in-testing social AI assistant designed to help with various tasks. -  I am currently in testing, so my capabilities are limited. However, you can access my present functions by asking me certain keywords. -  The following keywords are currently available: "uptime", "status", "help", and "quit"
+INTENT_QUIT EMOTION_NEUTRAL BOOL_SYSTEM_OK |  Shutting down. Goodbye. <$BOOL_SYSTEM_OK % FALSE>
