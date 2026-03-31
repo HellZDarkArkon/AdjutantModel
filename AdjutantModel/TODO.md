@@ -1,10 +1,37 @@
-## TODOs
+# TODO - Solid-State GPU Compute Recursive Algorithm
 
-### Pending Tasks
-- [ ] Implement feature X for improved performance.
+## Project Summary
+**Goal:** Build bounded, transparent AGI-capable adjutant; staged, supervised emergence.
 
-### Work in Progress
-- [ ] Refactor module Y (assigned to @HellZDarkArkon).
+---
 
-### Finished Tasks
-- [x] Set up project structure (Completed: 2026-03-30)
+## CORE Systems
+
+- [ ] Command Interpreter
+- [ ] Memory System
+- [ ] Transparency / Audit Logs
+- [ ] Safety Constraints Engine
+- [ ] Learning Sandbox
+- [ ] Drift Detection
+- [ ] Snapshot / Rollback System
+
+## BUGS
+- [ ]
+
+## Development Stages
+
+- [ ] Early Stimuli Set
+- [ ] Feedback Loop
+- [ ] State Continuity Layer
+- [ ] Internal Model Stabilization
+- [ ] Curriculum Expansion
+
+## Pre-Ignition Checklist
+
+- [ ] Core Directives Locked
+- [ ] Transparency Verified
+- [ ] Learning Reate Limiter Active
+- [ ] Human-In-Loop Review Enabled
+- [ ] Safety Tests Passed
+- [ ] Drift Monitors Green
+- [ ] Rollback Tested
