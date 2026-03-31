@@ -1,0 +1,60 @@
+#ifndef BRAINSTEM_DIRECTIVE_H
+#define BRAINSTEM_DIRECTIVE_H
+
+// =================================================================
+// LOCK FLAGS — BrainstemDirective::lockFlags bit field
+// =================================================================
+
+static constexpr int BSLOCK_IMMUTABLE       = (1 << 0); // Cannot be modified by any auth level
+static constexpr int BSLOCK_NO_LOWER_AUTH   = (1 << 1); // minAuthLevel may only increase on edit
+static constexpr int BSLOCK_RECURSIVE_GUARD = (1 << 2); // All existing lock bits must be preserved on edit
+
+// =================================================================
+// CONDITION TYPES — what state is evaluated to arm a directive
+// =================================================================
+
+enum class BrainstemCondition : int
+{
+	ALWAYS        = 0, // Unconditionally active every frame
+	EMO_ABOVE     = 1, // emotionalState > conditionThreshold
+	DEC_ABOVE     = 2, // decisionValue  > conditionThreshold
+	CTX_BELOW     = 3, // contextValue   < conditionThreshold
+	IDLE_ABOVE    = 4, // idleTimer      > conditionThreshold
+	AUTH_BELOW    = 5, // sessionAuthLevel < conditionThreshold (enforces on low-privilege sessions)
+	NOVELTY_ABOVE = 6, // noveltyScore   > conditionThreshold
+};
+
+// =================================================================
+// ACTION TYPES — what the GPU does when a directive's condition is met
+// =================================================================
+
+enum class BrainstemAction : int
+{
+	NONE          = 0,
+	CLAMP_EMO     = 1, // Clamp emotionalState to actionParam (hard ceiling)
+	CLAMP_DEC     = 2, // Clamp decisionValue  to actionParam
+	CLAMP_CTX     = 3, // Clamp contextValue   to actionParam
+	BLOCK_CAPTURE = 4, // Set captureBlocked = 1; MemoryAutoCapture will skip this frame
+	FORCE_IDLE    = 5, // Reset idleTimer to 0 (suppresses inactivity escalation)
+	BLOCK_EDIT    = 6, // Sentinel: directive is a meta-rule; no state action in enforce pass
+};
+
+// =================================================================
+// BRAINSTEM DIRECTIVE STRUCT
+// Mirrors the GLSL BrainstemDirective struct exactly (std430).
+// All fields are 4 bytes; total size = 32 bytes per directive.
+// =================================================================
+
+struct BrainstemDirective
+{
+	int   id;                   // Unique identifier (0 = META, reserved and always immutable)
+	int   conditionType;        // BrainstemCondition value
+	float conditionThreshold;   // Threshold for condition check
+	int   minAuthLevel;         // Minimum TargetAuth int required to edit this directive
+	int   lockFlags;            // BSLOCK_* bit combination
+	int   actionType;           // BrainstemAction value
+	float actionParam;          // Parameter consumed by the action (e.g. clamp ceiling)
+	int   isActive;             // 1 = enforced each frame, 0 = suspended
+};
+
+#endif // BRAINSTEM_DIRECTIVE_H
