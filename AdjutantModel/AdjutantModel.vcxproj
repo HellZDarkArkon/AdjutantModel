@@ -177,6 +177,8 @@
     <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\MoraicGrid.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\Phoneme.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\PhonemeSynth.h" />
+    <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\PhraseContour.h" />
+    <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\PitchAccentModel.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\ProsodicFoot.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\ProsodicWord.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\SonorityContour.h" />

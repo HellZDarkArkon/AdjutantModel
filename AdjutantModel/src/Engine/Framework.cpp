@@ -1,6 +1,7 @@
 #include "Framework.h"
 #include "../Adjutant/Speech/Voice/Vocalics/Phoneme.h"
 #include <conio.h> // For _kbhit and _getch
+#include <filesystem>
 
 Framework::Framework() : DELTA_t(0.0), isRunning(false), baseCooldown(0.0), speechCooldown(0.0), pcmCooldown(0.0), inputBuffer("")
 {
@@ -13,6 +14,9 @@ Framework::~Framework()
 
 bool Framework::Init()
 {
+	std::filesystem::current_path(
+		std::filesystem::path(__FILE__).parent_path().parent_path().parent_path());
+
 	if (!glfwInit())
 	{
 		std::cerr << "Failed to initialise GLFW." << std::endl;
@@ -48,13 +52,13 @@ bool Framework::Init()
 	pcmCooldown = 0.0; // Initialize PCM cooldown to 0 to allow immediate processing of PCM messages
 
 	GetFileLoader() = FileLoader(); // Initialize the file loader subsystem
-	Phoneme::LoadPhonemeData(*this, *(new std::string("src/Adjutant/Speech/Voice/Vocalics/Phonemes.dat"))); // Load phoneme data from the specified file using the file loader
+	Phoneme::LoadPhonemeData(*this, *(new std::string("src/Adjutant/Speech/Voice/Vocalics/Phonemes.dat")));
 
 	// Initialize Adjutant Engine and other subsystems here
 	adjModel.Init(); // Initialize the Adjutant Engine
-	adjModel.GetGPU(*this, *(new std::string("src/Adjutant/GPU/core.shader"))); // Initialize the GPU subsystem of the Adjutant Engine with the specified compute shader file
+	adjModel.GetGPU(*this, *(new std::string("src/Adjutant/GPU/core.shader")));
 	adjModel.InitGPU(*this); // Initialize the GPU subsystem of the Adjutant Engine
-	adjModel.GetSpeechEngine().LoadLanguage("src/Adjutant/Speech/Voice/Language/Dictionary/en_US.dict");
+	adjModel.GetSpeechEngine().LoadLanguage(*(new std::string("src/Adjutant/Speech/Voice/Language/Dictionary/en_US.dict")));
 	
 	return true; // Return true if initialization is successful
 }

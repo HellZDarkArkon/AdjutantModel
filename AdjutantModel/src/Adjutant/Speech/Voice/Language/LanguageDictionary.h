@@ -46,7 +46,7 @@ public:
 			// Trim leading whitespace
 			line.erase(0, line.find_first_not_of(" \t\r\n"));
 
-			// Skip section headers and blank lines
+			// Skip section headers, directives, and blank lines
 			if (line.empty() || line[0] == '#') continue;
 
 			// Strip inline comments

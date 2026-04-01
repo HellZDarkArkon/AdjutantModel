@@ -165,6 +165,19 @@ private:
 					head = 1;
 
 				feet.push_back(ProsodicFoot(cur, syls[i + 1], head, defaultFootType));
+
+				// Reduced bare-vowel demotion: IH /ɪ/ and UH /ʊ/ are inherently
+				// unstressed and should not head a foot when they appear as a lone
+				// nucleus (no onset, no coda).  Promote the other syllable instead.
+				{
+					ProsodicFoot& f = feet.back();
+					if (f.Size() == 2 && f.headIndex == 0
+						&& f.syllables[0].onset.empty()
+						&& f.syllables[0].coda.empty()
+						&& IsReducedVowel(f.syllables[0].nucleus))
+						f.headIndex = 1;
+				}
+
 				i += 2;
 			}
 			else
@@ -223,6 +236,12 @@ private:
 	// -----------------------------------------------------------------------
 	// .dat parsing helpers
 	// -----------------------------------------------------------------------
+
+	static bool IsReducedVowel(const Phoneme& ph)
+	{
+		return ph.GetType() == PhonemeType::NEAR_CLOSE_NEAR_FRONT_UNROUNDED  // IH /ɪ/
+			|| ph.GetType() == PhonemeType::NEAR_CLOSE_NEAR_BACK_ROUNDED;    // UH /ʊ/
+	}
 
 	static std::vector<std::string> Tokenise(const std::string& line)
 	{

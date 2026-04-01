@@ -8,8 +8,9 @@
 #include "Voice/Language/LanguageDictionary.h"
 #include "Voice/Vocalics/PhonemeSynth.h"
 #include "Voice/Vocalics/FootParser.h"
+#include "Voice/Vocalics/PitchAccentModel.h"
 
-class AdjutantEngine; // Forward declaration of the AdjutantEngine class to avoid circular dependency
+class AdjutantEngine;
 
 class SpeechEngine
 {
@@ -45,6 +46,7 @@ private:
 	FootParser         mFootParser;
 	MoraicGrid         mMoraicGrid;
 	IntonationModel    mIntonationModel;
+	PitchAccentModel   mPitchAccentModel;
 	bool               mLanguageLoaded = false;
 };
 
