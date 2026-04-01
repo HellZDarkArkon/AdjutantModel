@@ -59,6 +59,7 @@ my - M - AY IH
 we - W - IY
 our - AW - ER
 us - AH - S
+us - AH - S
 you - Y - UW
 your - Y - AO - R
 he - HH - IY
@@ -116,6 +117,34 @@ might - M - AY IH - T
 shall - SH - AE - L
 should - SH - UH - D
 must - M - AH - S - T
+#------------------------------------------------------------------------
+# Numerals and quantifiers
+#------------------------------------------------------------------------
+all - AO - L
+some - S - UH - M
+any - EH - N - IY
+one - W - AH - N
+two - T - UW
+three - TH - R - IY
+four - F - OW - R
+five - F - AY IH - V
+six - S - IH - K - S
+seven - S - EH - V - EH - N
+eight - EY - IH - T
+nine - N - AY IH - N
+ten - T - EH - N
+zero - Z - IH - R - OW
+1 - W - AH - N
+2 - T - UW
+3 - TH - R - IY
+4 - F - OW - R
+5 - F - AY IH - V
+6 - S - IH - K - S
+7 - S - EH - V - EH - N
+8 - EY - IH - T
+9 - N - AY IH - N
+10 - T - EH - N
+0 - Z - IH - R - OW
 # -----------------------------------------------------------------------
 # Common nouns
 # -----------------------------------------------------------------------
@@ -389,8 +418,8 @@ error - EH - R - ER
 access - AE - K - S - EH - S
 target - T - AA - R - G - AH - T
 active - AE - K - T - IH - V
-online - AA - N - L - AY IH - N
-offline - AO - F - L - AY IH - N
+online - AA - N - L - AY - IH - N
+offline - AO - F - L - AY - IH - N
 ready - R - EH - D - IY
 loading - L - OW - UH - D - IH - NG
 complete - K - AH - M - P - L - IY - T
@@ -402,6 +431,7 @@ operation - AA - P - ER - EY - IH - SH - AH - N
 confirmed - K - AH - N - F - ER - M - D
 negative - N - EH - G - AH - T - IH - V
 affirmative - AH - F - ER - M - AH - T - IH - V
+current - K - ER - AH - N - T
 # -----------------------------------------------------------------------
 # Adjutant startup vocabulary
 # -----------------------------------------------------------------------
@@ -410,9 +440,9 @@ beginning - B - IH - G - IH - N - IH - NG
 boot - B - UW - T
 sequence - S - IY - K - W - AH - N - S
 machine - M - AH - SH - IY - N
-initialize - IH - N - IH - SH - AH - L - AY IH - Z
-initializing - IH - N - IH - SH - AH - L - AY IH - Z - IH - NG
-initialized - IH - N - IH - SH - AH - L - AY IH - Z - D
+initialize - IH - N - IH - SH - IY - AH - L - AY IH - Z
+initializing - IH - N - IH - SH - IY - AH - L - AY IH - Z - IH - NG
+initialized - IH - N - IH - SH - IY - AH - L - AY IH - Z - D
 core - K - AO - R
 kernel - K - ER - N - AH - L
 successfully - S - AH - K - S - EH - S - F - AH - L - IY

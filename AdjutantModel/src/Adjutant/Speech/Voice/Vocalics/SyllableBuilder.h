@@ -101,11 +101,20 @@ public:
 	{
 		if (phonemes.empty()) return {};
 
-		// Step 1: locate nucleus positions
+		// Step 1: locate nucleus positions; an IH or UH vowel immediately following
+		// another vowel is a diphthong off-glide — it shares the preceding nucleus.
 		std::vector<int> nuclei;
+		std::vector<bool> isOffGlide(phonemes.size(), false);
 		for (int i = 0; i < (int)phonemes.size(); ++i)
+		{
 			if (!phonemes[i].IsConsonant())
-				nuclei.push_back(i);
+			{
+				if (!nuclei.empty() && i == nuclei.back() + 1 && IsDiphthongOffGlide(phonemes[i]))
+					isOffGlide[i] = true;
+				else
+					nuclei.push_back(i);
+			}
+		}
 
 		// No vowels at all — treat entire sequence as a single degenerate syllable
 		if (nuclei.empty())
@@ -127,10 +136,12 @@ public:
 		{
 			int nucPos = nuclei[ni];
 
-			// Consonant range available for this nucleus's onset: [cursor, nucPos)
+			// Range available for this nucleus's onset: [cursor, nucPos), excluding
+			// diphthong off-glide vowels (they will be pushed to the preceding coda).
 			std::vector<int> available;
 			for (int k = cursor; k < nucPos; ++k)
-				available.push_back(k);
+				if (!isOffGlide[k])
+					available.push_back(k);
 
 			// MOP: try to maximise the onset, falling back if SSP (or exceptions)
 			// require a shorter onset.  When available is empty (adjacent vowels /
@@ -208,6 +219,16 @@ public:
 	{
 		if (!ph.IsConsonant()) return 6; // vowel / nucleus
 		return SonorityRank(ph.GetManner());
+	}
+
+	// Returns true for the two vowels that serve as English diphthong off-glides:
+	// IH /ɪ/ (sky, day, boy) and UH /ʊ/ (go, now).  An IH or UH immediately
+	// following another vowel nucleus is merged into that nucleus rather than
+	// starting a new syllable.
+	static bool IsDiphthongOffGlide(const Phoneme& ph)
+	{
+		return ph.GetType() == PhonemeType::NEAR_CLOSE_NEAR_FRONT_UNROUNDED  // IH /ɪ/
+			|| ph.GetType() == PhonemeType::NEAR_CLOSE_NEAR_BACK_ROUNDED;    // UH /ʊ/
 	}
 
 private:

@@ -126,7 +126,8 @@ public:
 	std::vector<std::vector<PhonemeRenderParams>> Compute(
 		const ProsodicWord&              word,
 		const MoraicGrid&                grid,
-		const std::vector<SonorityProfile>& contours) const
+		const std::vector<SonorityProfile>& contours,
+		const std::vector<double>&       phraseF0Bases = {}) const
 	{
 		auto flat = word.FlatSyllables();
 		const auto& timings = grid.Syllables();
@@ -143,14 +144,21 @@ public:
 			StressLevel         stress  = flat[si].second;
 			const SyllableTiming& timing = timings[si];
 
-			// Syllable-level F0 and amplitude targets
-			double f0Target  = mParams.baseF0 * F0Scale(stress);
+			// Syllable-level F0 target: phrase contour base when provided,
+			// otherwise the model's baseF0.  Word-level declination is suppressed
+			// when phrase bases are active (the contour already encodes it).
+			double f0Base   = (!phraseF0Bases.empty() && si < (int)phraseF0Bases.size())
+							   ? phraseF0Bases[si] : mParams.baseF0;
+			double f0Target = f0Base * F0Scale(stress);
 			double ampTarget = AmpScale(stress);
 
-			// Sentence-level declination: F0 drifts down linearly over the word
-			double tMid = (timing.startSeconds + timing.durationSeconds * 0.5) / (totalDur > 1e-6 ? totalDur : 1e-6);
-			double declination = 1.0 - mParams.declinationRate * tMid;
-			f0Target *= (declination > 0.5 ? declination : 0.5);
+			if (phraseF0Bases.empty())
+			{
+				// Sentence-level declination: F0 drifts down linearly over the word
+				double tMid = (timing.startSeconds + timing.durationSeconds * 0.5) / (totalDur > 1e-6 ? totalDur : 1e-6);
+				double declination = 1.0 - mParams.declinationRate * tMid;
+				f0Target *= (declination > 0.5 ? declination : 0.5);
+			}
 
 			// Duration allocation across phonemes in this syllable.
 			// A diphthong glide is an onset-less, unstressed, non-first syllable
@@ -267,6 +275,7 @@ public:
 	};
 
 	void ApplyParams(const Params& p) { mParams = p; }
+	double GetBaseF0() const { return mParams.baseF0; }
 
 private:
 	Params mParams;
