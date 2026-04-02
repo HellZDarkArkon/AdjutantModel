@@ -144,7 +144,7 @@ double SpeechEngine::SpeakLine(const std::string& text, VoiceOutputEngine& vo)
 	auto unknownGap = BeepSynth::Silence(50, sr);
 
 	// -----------------------------------------------------------------------
-	// Pass 1 — analysis: phoneme lookup, syllabification, moraic timing.
+	// Pass 1 â€” analysis: phoneme lookup, syllabification, moraic timing.
 	// Builds one WordData per recognised token and records utterance-absolute
 	// onset times so the phrase contour can be computed across word boundaries.
 	// -----------------------------------------------------------------------
@@ -328,7 +328,7 @@ double SpeechEngine::SpeakLine(const std::string& text, VoiceOutputEngine& vo)
 	}
 
 	// -----------------------------------------------------------------------
-	// Language Cortex — extract linguistic features from the completed
+	// Language Cortex â€” extract linguistic features from the completed
 	// Pass 1 analysis.  All phraseF0Bases and stress overrides are
 	// finalized at this point, so features reflect the full prosodic picture.
 	// The cortex marks itself dirty; AdjutantEngine uploads to GPU binding 14
@@ -384,10 +384,59 @@ double SpeechEngine::SpeakLine(const std::string& text, VoiceOutputEngine& vo)
 		mLangCortex->RecordWords(wordTexts);
 		mLangCortex->Analyze((int)words.size(), phonCnt, sylCnt, oovCnt,
 							 avgF0Hz, avgSyllDurMs, stressEntr, dominant);
+
+			double phraseStart = words[phrase.wordIndices.front()].startSec;
+			double phraseEnd   = words[phrase.wordIndices.back()].startSec
+							   + words[phrase.wordIndices.back()].durationSec;
+			double phraseDur   = phraseEnd - phraseStart;
+			if (phraseDur < 1e-6) phraseDur = 1e-6;
+
+				std::vector<StressLevel>          phraseStress;
+				std::vector<double>               phraseTimes;
+				std::vector<std::pair<int, int>>  phraseSylIds;
+
+				for (int wi : phrase.wordIndices)
+				{
+					mMoraicGrid.Compute(words[wi].pw);
+					const auto& timings = mMoraicGrid.Syllables();
+					auto flatSyls       = words[wi].pw.FlatSyllables();
+
+					for (int si = 0; si < (int)words[wi].phraseF0Bases.size(); ++si)
+					{
+						double sylMid = words[wi].startSec
+							+ (si < (int)timings.size()
+								? timings[si].startSeconds + timings[si].durationSeconds * 0.5
+								: words[wi].durationSec * 0.5);
+						double tPhrase = (sylMid - phraseStart) / phraseDur;
+						words[wi].phraseF0Bases[si] =
+							mIntonationModel.GetBaseF0()
+							* PhraseContour::Multiplier(tPhrase, phrase.type, cp);
+
+						phraseStress.push_back(si < (int)flatSyls.size()
+							? flatSyls[si].second : StressLevel::UNSTRESSED);
+						phraseTimes.push_back(tPhrase);
+						phraseSylIds.emplace_back(wi, si);
+					}
+				}
+
+				// Apply pitch accent coarticulation: consecutive accented syllables
+				// modify each other's F0 target according to the rule table.
+				{
+					std::vector<double> flatF0;
+					flatF0.reserve(phraseSylIds.size());
+					for (auto& [wi, si] : phraseSylIds)
+						flatF0.push_back(words[wi].phraseF0Bases[si]);
+
+					mPitchAccentModel.Apply(phraseStress, phraseTimes, phrase.type, flatF0);
+
+					for (int i = 0; i < (int)phraseSylIds.size(); ++i)
+						words[phraseSylIds[i].first].phraseF0Bases[phraseSylIds[i].second] = flatF0[i];
+				}
+			}
 	}
 
 	// -----------------------------------------------------------------------
-	// Pass 2 — synthesis.
+	// Pass 2 â€” synthesis.
 	// Restore moraic timings per word, call IntonationModel with the per-
 	// syllable phrase F0 bases computed above, then OLA-append each word.
 	// -----------------------------------------------------------------------

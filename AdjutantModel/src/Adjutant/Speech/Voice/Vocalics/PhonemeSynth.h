@@ -41,6 +41,7 @@ public:
 		{
 			double t = static_cast<double>(i) / mSampleRate;
 			double vibratoDepth = (t > 0.050) ? 0.012 * min(1.0, (t - 0.050) / 0.080) : 0.0;
+			double vibratoDepth = (t > 0.050) ? 0.003 * min(1.0, (t - 0.050) / 0.060) : 0.0;
 			double vibrato = 1.0 + vibratoDepth * sin(TAU * 6.2 * t);
 			double s = GlottalSource(t, pitchHz*vibrato);
 			driftFormants[0] = 1.0 + 0.003 * sin(TAU * 3.1 * t); // Add a small amount of drift to the first formant frequency to create a more natural sound by simulating slight variations in the vocal tract shape over time (adjustable based on desired effect)
@@ -57,6 +58,7 @@ public:
 			mLastPhase = mGlottalPhase; // Update the last phase for the next iteration
 			s *= mShimmer * mMicroShimmer; // Apply shimmer to the glottal source signal to create a more natural sound (adjustable based on desired effect)
 			mTiltCoeff = 0.88 + 0.02 * sin(TAU * 0.7 * t);
+			mTiltCoeff = 0.20 + 0.05 * sin(TAU * 0.7 * t);
 			s = SpectralTilt(s);
 			s += WhiteNoise() * 0.048;
 			ApplyFormants(s, phoneme);
@@ -145,6 +147,7 @@ public:
 			// F0 glides linearly from f0Start to f0End over the phoneme window
 			double pitchHz = params.f0Start + (params.f0End - params.f0Start) * tNorm;
 			double vibratoDepth = (t > 0.050) ? 0.012 * min(1.0, (t - 0.050) / 0.080) : 0.0;
+			double vibratoDepth = (t > 0.050) ? 0.003 * min(1.0, (t - 0.050) / 0.060) : 0.0;
 			double vibrato = 1.0 + vibratoDepth * sin(TAU * 6.2 * t);
 
 			double s = GlottalSource(t, pitchHz * vibrato);
@@ -162,6 +165,7 @@ public:
 			mLastPhase = mGlottalPhase;
 			s *= mShimmer * mMicroShimmer;
 			mTiltCoeff = 0.88 + 0.020 * sin(TAU * 0.7 * t);
+			mTiltCoeff = 0.20 + 0.05 * sin(TAU * 0.7 * t);
 			s  = SpectralTilt(s);
 			if (hasCarry)
 			{
@@ -420,6 +424,7 @@ private:
 		for (double s : raw) ss += s * s;
 		double rms = std::sqrt(ss / raw.size());
 		double gain = (rms > 1e-9) ? (targetRms * (std::min)(1.4, mCurrentAmpScale)) / rms : 1.0;
+		double gain = (rms > 1e-9) ? (targetRms * (std::min)(1.0, mCurrentAmpScale)) / rms : 1.0;
 		std::vector<short> out(raw.size());
 		for (size_t i = 0; i < raw.size(); i++)
 		{
@@ -475,6 +480,13 @@ private:
 			raw[i] = s;
 		}
 		return NormaliseAndConvert(raw, 0.18);
+			s = mF1.Process(s);  // murmur pole — couples oral + nasal cavity resonance
+			s = mF2.Process(s);  // nasal formant pole (place-dependent)
+			s = mF3.Process(s);  // upper pole
+			s *= ConsonantEnvelope(t, dur);
+			raw[i] = s;
+		}
+		return NormaliseAndConvert(raw, 0.16);
 	}
 
 	// Plosive: Burst + Aspiration + Formant Transition model
@@ -558,6 +570,13 @@ private:
 					s = SpectralTilt(s);
 					s = mF1.Process(mF2.Process(mF3.Process(mF4.Process(mF5.Process(s)))));
 					s *= vr * 0.12;
+				}
+				else
+				{
+					double g = GlottalSource(t, f0);
+					(void)SpectralTilt(g);
+					(void)mF1.Process(mF2.Process(mF3.Process(mF4.Process(mF5.Process(g)))));
+					s = WhiteNoise() * nl * 0.015;
 				}
 				else
 				{
@@ -711,6 +730,14 @@ private:
 			double carry  = mF1.Process(mF2.Process(mF3.Process(mF4.Process(mF5.Process(g))))) * 0.06;
 
 			raw[i] = (noise + voiced + carry) * ConsonantEnvelope(t, dur);
+			// Voiced component: LP-filtered glottal source (unconditional for phase continuity)
+			double g = GlottalSource(t, f0);
+			g = SpectralTilt(g);
+			double voiced = (vr > 0.0) ? lpGlottal.Process(g) * vr * 0.35 : 0.0;
+			double carry  = mF1.Process(mF2.Process(mF3.Process(mF4.Process(mF5.Process(g))))) * 0.04;
+
+			double s = (noise + voiced + carry) * ConsonantEnvelope(t, dur);
+			raw[i] = s;
 		}
 		return NormaliseAndConvert(raw, 0.28);
 	}
@@ -1039,6 +1066,7 @@ private:
 	mutable double mJitter2      = 1.0;
 	mutable double mOQJitter     = 0.60;
 	mutable double mTiltCoeff    = 0.88;
+	mutable double mTiltCoeff    = 0.20;
 	mutable bool   mInWord       = false;
 	bool mSuppressAttack  = false;
 	bool mSuppressRelease = false;
@@ -1189,6 +1217,8 @@ private:
 	{
 		mTiltState = mTiltCoeff * mTiltState + (1.0 - mTiltCoeff) * sample;
 		return mTiltState;
+		mTiltState = sample + mTiltCoeff * mTiltState; // Update the tilt state based on the current sample and the previous state to create a low-pass filter effect that simulates spectral tilt
+		return mTiltState; // Return the current value of the tilt state as the output of the spectral tilt filter
 	}
 
 	double Envelope(double t, double durationSeconds) const

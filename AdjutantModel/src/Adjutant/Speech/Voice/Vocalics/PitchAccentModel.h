@@ -31,6 +31,7 @@ enum class PitchAccentType
     H_PLUS_L_STAR,
     DOWNSTEP_H,
     AUTO          // sentinel: delegate to PitchAccentModel::Assign() (never stored as a result)
+    DOWNSTEP_H
 };
 
 // ---------------------------------------------------------------------------

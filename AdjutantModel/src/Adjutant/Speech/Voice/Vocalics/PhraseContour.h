@@ -134,6 +134,7 @@ public:
 // would otherwise be NEUTRAL) so every phrase list is properly closed.
 // Pure-digit tokens are expanded to their spoken word equivalents via
 // NumberToWords() before being pushed into the result.
+// Pure-digit tokens are dropped (numbers are not synthesised).
 // ---------------------------------------------------------------------------
 class PhraseSegmenter
 {
@@ -255,6 +256,11 @@ public:
                 }
                 continue;
             }
+            // Lowercase
+            for (char& c : raw) c = (char)std::tolower((unsigned char)c);
+
+            // Drop pure-digit tokens (numbers are handled elsewhere)
+            if (std::all_of(raw.begin(), raw.end(), ::isdigit)) continue;
 
             result.push_back({ raw, boundary, type });
         }
