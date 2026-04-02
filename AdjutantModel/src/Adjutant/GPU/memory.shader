@@ -85,6 +85,24 @@ layout(std430, binding = 9) buffer MemoryRuntime
 };
 
 // =================================================================
+// SENSORY AVERAGE STATE BUFFER  (binding 13)
+// Slow path: time-averaged perception. The influence pass may add a
+// contextual tint here; it must never write averaged data to binding 0.
+// =================================================================
+
+layout(std430, binding = 13) buffer SensoryAvgState
+{
+    float slowIdleTimer;
+    float slowEmotional;
+    float slowContext;
+    float slowDecision;
+    float halfLife;
+    float saPad0;
+    float saPad1;
+    float saPad2;
+};
+
+// =================================================================
 // COMMAND CONSTANTS
 // =================================================================
 
@@ -312,10 +330,13 @@ void main()
 
 void MemoryInfluenceState()
 {
+    // Arc 1 — Memory → Slow Path: STM running averages tint the contextual
+    // (slow) perception layer. CoreMindState (binding 0) is never touched here—
+    // the fast path remains the sole domain of the core reactive pipeline.
     float t = clamp(deltaTime * 0.2, 0.0, 0.1);
-    emotionalState = mix(emotionalState, avgEmotionalState, t);
-    contextValue   = mix(contextValue,   avgContextValue,   t);
-    decisionValue  = mix(decisionValue,  avgDecisionValue,  t);
+    slowEmotional = clamp(mix(slowEmotional, avgEmotionalState, t), 0.0, 1.0);
+    slowContext   = clamp(mix(slowContext,   avgContextValue,   t), 0.0, 1.0);
+    slowDecision  = clamp(mix(slowDecision,  avgDecisionValue,  t), 0.0, 1.0);
 }
 
 void main()

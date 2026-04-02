@@ -132,11 +132,66 @@ public:
 //
 // The very last token is always forced to isBoundary=true (DECLARATIVE if it
 // would otherwise be NEUTRAL) so every phrase list is properly closed.
-// Pure-digit tokens are dropped (numbers are not synthesised).
+// Pure-digit tokens are expanded to their spoken word equivalents via
+// NumberToWords() before being pushed into the result.
 // ---------------------------------------------------------------------------
 class PhraseSegmenter
 {
 public:
+    // Converts a non-negative integer to its spoken English word string.
+    // e.g. 42 → "forty two",  1001 → "one thousand one"
+    static std::string NumberToWords(long long n)
+    {
+        if (n == 0) return "zero";
+
+        static const char* kOnes[] = {
+            "", "one", "two", "three", "four", "five", "six", "seven",
+            "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+            "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"
+        };
+        static const char* kTens[] = {
+            "", "", "twenty", "thirty", "forty", "fifty",
+            "sixty", "seventy", "eighty", "ninety"
+        };
+
+        std::string result;
+
+        if (n >= 1000000000LL)
+        {
+            result += NumberToWords(n / 1000000000LL) + " billion";
+            n %= 1000000000LL;
+            if (n) result += " ";
+        }
+        if (n >= 1000000)
+        {
+            result += NumberToWords(n / 1000000) + " million";
+            n %= 1000000;
+            if (n) result += " ";
+        }
+        if (n >= 1000)
+        {
+            result += NumberToWords(n / 1000) + " thousand";
+            n %= 1000;
+            if (n) result += " ";
+        }
+        if (n >= 100)
+        {
+            result += std::string(kOnes[n / 100]) + " hundred";
+            n %= 100;
+            if (n) result += " ";
+        }
+        if (n >= 20)
+        {
+            result += kTens[n / 10];
+            n %= 10;
+            if (n) result += " ";
+        }
+        if (n > 0)
+            result += kOnes[n];
+
+        return result;
+    }
+
     static std::vector<TaggedToken> Tokenize(const std::string& text)
     {
         static const std::string kStrip = ".,!?;:'\"()-_";
@@ -170,11 +225,36 @@ public:
 
             if (raw.empty()) continue;
 
+            // Normalize internal hyphens so compound words typed as "on-line"
+            // reach the dictionary as "online" — no gap between syllables.
+            raw.erase(std::remove(raw.begin(), raw.end(), '-'), raw.end());
+            if (raw.empty()) continue;
+
             // Lowercase
             for (char& c : raw) c = (char)std::tolower((unsigned char)c);
 
-            // Drop pure-digit tokens (numbers are handled elsewhere)
-            if (std::all_of(raw.begin(), raw.end(), ::isdigit)) continue;
+            // Expand pure-digit tokens to their spoken word equivalents.
+            // Strings longer than 18 digits would overflow long long — skip them.
+            if (std::all_of(raw.begin(), raw.end(), ::isdigit))
+            {
+                if (raw.size() <= 18)
+                {
+                    long long val = 0;
+                    for (char c : raw) val = val * 10 + (c - '0');
+                    std::string expanded = NumberToWords(val);
+                    std::istringstream ws(expanded);
+                    std::vector<std::string> numWords;
+                    std::string nw;
+                    while (ws >> nw) numWords.push_back(nw);
+                    for (size_t i = 0; i < numWords.size(); ++i)
+                    {
+                        bool isLast = (i == numWords.size() - 1);
+                        result.push_back({ numWords[i], isLast && boundary,
+                                           isLast ? type : PhraseType::NEUTRAL });
+                    }
+                }
+                continue;
+            }
 
             result.push_back({ raw, boundary, type });
         }

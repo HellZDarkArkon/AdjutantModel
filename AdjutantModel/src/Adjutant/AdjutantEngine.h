@@ -13,10 +13,14 @@
 #include "MessageBus.h"
 #include "StateMachine.h"
 #include "Speech/SpeechEngine.h"
+#include "Speech/AuditoryCortex.h"
+#include "Speech/LanguageInputCortex.h"
 #include "Speech/Voice/Vocalics/PhonemeSynth.h"
 #include "TargetProfile.h"
 #include "UserProfile.h"
 #include "Brainstem/BrainstemManager.h"
+#include "Memories/Memory.h"
+#include "Speech/Voice/Language/LanguageCortex.h"
 
 class Framework; // Forward declaration of the Framework class to avoid circular dependency
 
@@ -34,6 +38,107 @@ struct DialogueOut
 	float urgency;
 	float confidence;
 	int systemOK; // GPU sets to 0 when INTENT_QUIT fires; CPU reads back to trigger shutdown
+};
+
+// CPU mirror of GPUMemoryEntry (binding 8) — 12 floats/ints × 4 bytes = 48 bytes per slot.
+// Named STMEntry to distinguish from the LTM MemoryEntry used by MemoryManager.
+struct STMEntry
+{
+	int   index;           // 1-based slot index
+	int   timeCode;        // HHMM at write time
+	int   dateCode;        // YYYYMMDD at write time
+	int   flags;           // bit0=ltmReady  bit1=eventBoundary  bit2=novel
+	float idleTimer;
+	float emotionalState;
+	float contextValue;
+	float decisionValue;
+	float salienceScore;
+	float priorityScore;
+	float noveltyScore;
+	float timeAge;         // seconds elapsed since this slot was written
+};
+
+// CPU mirror of the full MemoryData SSBO (binding 8): header + 64-slot ring buffer
+struct MemoryDataSnapshot
+{
+	int      memCount;
+	int      memWriteHead;
+	int      pad0, pad1;
+	STMEntry entries[64];
+};
+
+// CPU mirror of the MemoryRuntime SSBO (binding 9): 11 floats + 5 ints = 64 bytes
+struct MemoryRuntimeData
+{
+	float avgIdleTimer;
+	float avgEmotionalState;
+	float avgContextValue;
+	float avgDecisionValue;
+	float prevIdleTimer;
+	float prevEmotionalState;
+	float prevContextValue;
+	float prevDecisionValue;
+	float salienceScore;
+	float noveltyScore;
+	float priorityScore;
+	int   writeFlag;
+	int   eventBoundaryFlag;
+	int   ltmReadyCount;    // total entries with ltmReady bit set (LTM-eligible)
+	int   captureBlocked;   // 1 = brainstem suppressed capture this frame
+	int   rtPad1;
+};
+
+// Memory command codes — must match the constants defined in memory.shader
+static constexpr int MEM_CMD_NONE    = 0;
+static constexpr int MEM_CMD_CAPTURE = 1; // CPU-triggered manual snapshot
+static constexpr int MEM_CMD_INJECT  = 2; // CPU-triggered state restore from a slot
+
+// CPU mirror of the NeurochemState SSBO (binding 12): 6 active floats + 2 pad = 32 bytes.
+// Field order must match the std430 layout declared in neuro.shader exactly.
+	struct NeurochemState
+{
+	float reward;    // dopamine / endorphin   [0,1]  reinforcement signal
+	float threat;    // cortisol / adrenaline  [0,1]  stress / danger response
+	float novelty;   // dopamine / NE          [0,1]  curiosity / alertness
+	float focus;     // NE / acetylcholine     [0,1]  attentional load
+	float fatigue;   // adenosine              [0,1]  tiredness / rest drive
+	float social;    // oxytocin / serotonin   [0,1]  connection need
+	float neuroPad0;
+	float neuroPad1;
+};
+
+// CPU mirror of the SensoryAvgState SSBO (binding 13): 4 EMA floats + halfLife + 3 pad = 32 bytes.
+// slowEmotional/slowContext/slowDecision are the slow-path inputs to the decision kernel.
+// halfLife (seconds) controls how quickly the slow path tracks the fast path:
+//   small halfLife = more reactive; large = more inertial baseline.
+struct SensoryAvgState
+{
+	float slowIdleTimer; // EMA of idleTimer
+	float slowEmotional; // EMA of emotionalState
+	float slowContext;   // EMA of contextValue
+	float slowDecision;  // EMA of decisionValue
+	float halfLife;      // seconds; tunable EMA time constant (default 5.0)
+	float saPad0;
+	float saPad1;
+	float saPad2;
+};
+
+// CPU mirror of the LinguisticLearning SSBO (binding 15): 16 floats = 64 bytes.
+// GPU-maintained EMA statistics representing Adjutant's long-horizon language model.
+// Field order must match the std430 layout declared in language.shader exactly.
+struct LinguisticLearningData
+{
+	float avgWordCount;       // EMA of words per utterance
+	float avgPhonemePerWord;  // EMA of phonemes/word ratio
+	float avgOovRate;         // EMA of OOV rate (vocabulary novelty trend)
+	float avgComplexity;      // EMA of complexity score
+	float avgF0Norm;          // EMA of realized F0 (speaker register)
+	float avgSyllDurNorm;     // EMA of syllable duration (speaking rate)
+	float utteranceCount;     // running count of utterances processed
+	float learningRate;       // EMA alpha per utterance (default 0.10)
+	float vocabularyNorm;     // vocabulary breadth estimate [0,1]
+	float convergenceScore;   // stability metric [0,1]
+	float llPad0, llPad1, llPad2, llPad3, llPad4, llPad5;
 };
 
 struct U32String
@@ -232,6 +337,8 @@ class AdjutantEngine
 	MessageBus& GetMessageBus() { return msgBus; } // Accessor for the message bus
 	AdjutantStateMachine& GetStateMachine() { return stateMachine; } // Accessor for the state machine
 	SpeechEngine& GetSpeechEngine() { return speechEngine; } // Accessor for the speech engine
+	AuditoryCortex& GetAuditoryCortex() { return mAuditoryCortex; } // Accessor for the auditory cortex
+	LanguageInputCortex& GetLanguageInputCortex() { return mLangInputCortex; } // Accessor for the language input cortex
 	bool GetShouldClose() const { return shouldClose; } // Accessor for the shutdown flag
 private:
 	std::vector<std::string> computeList; // List of compute shader file paths for GPU tasks
@@ -286,8 +393,33 @@ private:
 	GLuint brainstemBuffer     = 0; // binding 10 — BrainstemData (directives + session auth + version)
 	GLuint brainstemEditBuffer = 0; // binding 11 — BrainstemEditCmd (incoming edit request)
 
+	// Neurochemical Kernel programs (binding 12)
+	GLuint neuroUpdateProgram    = 0; // Arc 6 — State → Neuro: per-frame decay + CoreMindState excitations
+	GLuint neuroInfluenceProgram = 0; // Arc 5 — Neuro → Slow Path: tints SensoryAvgState before dec kernel
+
+	// Neurochemical SSBO
+	GLuint neuroBuffer = 0; // binding 12 — NeurochemState (reward, threat, novelty, focus, fatigue, social)
+
+	// Sensory Avg Kernel program (binding 13)
+	GLuint sensorAvgProgram = 0; // Arc 7 — Fast → Slow: per-frame EMA update (CoreMindState → SensoryAvgState)
+
+	// Sensory Avg SSBO
+	GLuint sensorAvgBuffer  = 0; // binding 13 — SensoryAvgState (slowEmotional, slowContext, slowDecision, halfLife)
+
+	// Language Cortex Kernel programs (bindings 14-15)
+	GLuint langUpdateProgram    = 0; // Arc 8 — CPU → GPU: integrate utterance features into LinguisticLearning
+	GLuint langInfluenceProgram = 0; // Arc 9 — Language → Slow Path: linguistic stats tint SensoryAvgState
+
+	// Language Cortex SSBOs
+	GLuint linguisticStateBuffer    = 0; // binding 14 — LinguisticState (per-utterance feature vector)
+	GLuint linguisticLearningBuffer = 0; // binding 15 — LinguisticLearning (GPU-maintained running EMA stats)
+
 	BrainstemManager brainstemMgr;
-	std::unordered_map<GLuint, GLint> deltaTimeLocs; // Cached deltaTime uniform locations per program — populated once in InitGPU
+	MemoryManager    memoryMgr;    // CPU SSD long-term memory bank
+	LanguageCortex   mLangCortex;  // CPU-side linguistic feature extractor + novelty window
+	AuditoryCortex      mAuditoryCortex;  // WASAPI microphone stream capture
+	LanguageInputCortex mLangInputCortex; // VAD + acoustic analysis bridge to LanguageCortex
+	std::unordered_map<GLuint, GLint> deltaTimeLocs;
 
 
 	enum IntentCode
@@ -344,7 +476,146 @@ public:
 			return INTENT_NONE; // Return INTENT_NONE if the command is not recognized
 	}
 
-	
+	// ---------------------------------------------------------------
+	// Short-Term Memory Bank API
+	// ---------------------------------------------------------------
+
+	// Write MEM_CMD_CAPTURE to the GPU command buffer.
+	// timeCode = HHMM (e.g. 1430 for 14:30), dateCode = YYYYMMDD.
+	// The GPU #memcapture pass will consume the command and reset it to MEM_CMD_NONE.
+	void TriggerMemoryCapture(int timeCode, int dateCode)
+	{
+		struct { int cmd, slot, tc, dc; } mCmd = { MEM_CMD_CAPTURE, 0, timeCode, dateCode };
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, memCommandBuffer);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(mCmd), &mCmd);
+	}
+
+	// Write MEM_CMD_INJECT to the GPU command buffer for the given slot index.
+	// The GPU #meminject pass will restore that slot into CoreMindState and reset the command.
+	void TriggerMemoryInject(int slot, int timeCode, int dateCode)
+	{
+		struct { int cmd, slot, tc, dc; } mCmd = { MEM_CMD_INJECT, slot, timeCode, dateCode };
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, memCommandBuffer);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(mCmd), &mCmd);
+	}
+
+	// Read back the MemoryRuntime SSBO (binding 9) from GPU VRAM to CPU.
+	// Returns temporal averages, salience/novelty/priority scores, and status flags.
+	MemoryRuntimeData ReadMemoryRuntime()
+	{
+		MemoryRuntimeData rt{};
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, memRuntimeBuffer);
+		glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(MemoryRuntimeData), &rt);
+		return rt;
+	}
+
+	// Read back the full MemoryData SSBO (binding 8) from GPU VRAM to CPU.
+	// Returns the ring-buffer header and all 64 STM entries. Use ltmReady entries for LTM promotion.
+	MemoryDataSnapshot ReadMemoryData()
+	{
+		MemoryDataSnapshot snap{};
+		constexpr GLsizeiptr MEM_DATA_SIZE = 4 * sizeof(GLint) + 64 * 12 * sizeof(GLfloat);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, memDataBuffer);
+		glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, MEM_DATA_SIZE, &snap);
+		return snap;
+	}
+
+	// ---------------------------------------------------------------
+	// Long-Term Memory Bank API
+	// ---------------------------------------------------------------
+
+	// Restore a persisted LTM entry directly into CoreMindState (binding 0).
+	// For full pipeline restoration (syncs STM running averages) use TriggerMemoryInject instead.
+	void InjectFromLTM(int index)
+	{
+		memoryMgr.InjectToGPU(index, stateBuffer);
+	}
+
+	const std::vector<MemoryEntry>& GetLTMEntries() const { return memoryMgr.GetEntries(); }
+
+	// ---------------------------------------------------------------
+	// Neurochemical State API
+	// ---------------------------------------------------------------
+
+	// Read back the NeurochemState SSBO (binding 12) from GPU VRAM to CPU.
+	// Returns the six hormone / neurotransmitter axis values.
+	NeurochemState ReadNeurochemState()
+	{
+		NeurochemState ns{};
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, neuroBuffer);
+		glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(NeurochemState), &ns);
+		return ns;
+	}
+
+	// Add a CPU-side delta to one or more neuro axes (e.g. reward pulse on task completion).
+	// Each value is clamped to [0, 1] after addition. Pass 0.0f for axes to leave unchanged.
+	void SpikeNeuro(float reward, float threat, float novelty,
+					float focus,  float fatigue, float social)
+	{
+		NeurochemState ns = ReadNeurochemState();
+		auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+		ns.reward  = clamp01(ns.reward  + reward);
+		ns.threat  = clamp01(ns.threat  + threat);
+		ns.novelty = clamp01(ns.novelty + novelty);
+		ns.focus   = clamp01(ns.focus   + focus);
+		ns.fatigue = clamp01(ns.fatigue + fatigue);
+		ns.social  = clamp01(ns.social  + social);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, neuroBuffer);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(NeurochemState), &ns);
+	}
+
+	// ---------------------------------------------------------------
+	// Sensory Avg State API  (binding 13 — slow path)
+	// ---------------------------------------------------------------
+
+	// Read back the SensoryAvgState SSBO (binding 13) from GPU VRAM to CPU.
+	SensoryAvgState ReadSensoryAvgState()
+	{
+		SensoryAvgState sa{};
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, sensorAvgBuffer);
+		glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(SensoryAvgState), &sa);
+		return sa;
+	}
+
+	// Sets the EMA half-life (seconds) for the slow sensory path.
+	// Larger values make the slow path more inertial; smaller values make it
+	// track the fast path more closely. Minimum is clamped to 0.1s on the GPU.
+	void SetHalfLife(float seconds)
+	{
+		SensoryAvgState sa = ReadSensoryAvgState();
+		sa.halfLife = seconds > 0.0f ? seconds : 0.1f;
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, sensorAvgBuffer);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(SensoryAvgState), &sa);
+	}
+
+	// ---------------------------------------------------------------
+	// Language Cortex API  (bindings 14-15)
+	// ---------------------------------------------------------------
+
+	// Read back the LinguisticLearning SSBO (binding 15) from GPU VRAM to CPU.
+	// Returns the GPU-maintained EMA statistics of communication patterns.
+	LinguisticLearningData ReadLinguisticLearning()
+	{
+		LinguisticLearningData ll{};
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, linguisticLearningBuffer);
+		glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(LinguisticLearningData), &ll);
+		return ll;
+	}
+
+	// Force-push the current cortex features to GPU binding 14 immediately.
+	// Normally called automatically at the start of each UpdateMindGPU frame
+	// when the cortex is dirty; use this for synchronous testing only.
+	void SubmitLinguisticState()
+	{
+		if (!mLangCortex.IsDirty()) return;
+		const LinguisticFeatures& feats = mLangCortex.GetFeatures();
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, linguisticStateBuffer);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(LinguisticFeatures), &feats);
+		mLangCortex.ClearDirty();
+	}
+
+	// Accessor for the language cortex (e.g. to tune novelty window size).
+	LanguageCortex& GetLanguageCortex() { return mLangCortex; }
 
 };
 

@@ -293,6 +293,16 @@ void AdjutantEngine::UpdateMindGPU(double Dt)
 {
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, stateBuffer); // Bind the state buffer to the shader storage buffer binding point 0 for use in the compute shader
 
+	// Push new utterance features to GPU binding 14 if the cortex was updated
+	// since the last frame.  Must happen before langUpdateProgram dispatches.
+	if (mLangCortex.IsDirty())
+	{
+		const LinguisticFeatures& feats = mLangCortex.GetFeatures();
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, linguisticStateBuffer);
+		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(LinguisticFeatures), &feats);
+		mLangCortex.ClearDirty();
+	}
+
 	auto run = [&](GLuint prg)
 		{
 			glUseProgram(prg); // Use the specified compute shader program for GPU tasks
@@ -306,19 +316,26 @@ void AdjutantEngine::UpdateMindGPU(double Dt)
 
 		};
 
-	run(memInfluenceProgram); // Arc 1 — Memory ? State:      prime CoreMindState from STM averages before core tick
-	run(coreProgram);         //                               CoreUpdate (idle timer)
-	run(emoProgram);          //                               EmotionUpdate (now memory-tinted)
-	run(contextProgram);      //                               ContextUpdate (now memory-tinted)
-	run(stateProgram);        //                               StateUpdate ? decisionValue from idle threshold
-	run(decProgram);          // Arc 2 — State ? Decisions:   refine decisionValue from emo × ctx pressure
-	run(brainstemProgram);    // BRAINSTEM: enforce directives on post-decision state; set captureBlocked
-	run(outputProgram);       //                               Output pass
-	run(diasemProgram);       //                               Derive intent from mind state
-	run(dianeuroProgram);     // Arc 4 — Memory ? Interpretation: STM biases tone / urgency / confidence
-	run(diainpProgram);       //                               CPU command overrides intent if present
-	run(dialogue1Program);    //                               Generate output string
-	run(memUpdateProgram);    // Arc 3 — Decisions ? Memory:  capture fully-processed state into STM
+	run(coreProgram);            //                                  CoreUpdate (idle timer)
+	run(emoProgram);             //                                  EmotionUpdate — pure fast-path reactive
+	run(contextProgram);         //                                  ContextUpdate — pure fast-path reactive
+	run(stateProgram);           //                                  StateUpdate — initial decisionValue from idle threshold
+	run(sensorAvgProgram);       // Arc 7 — Fast ? Slow:            EMA of CoreMindState into SensoryAvgState (binding 13)
+	run(memInfluenceProgram);    // Arc 1 — Memory ? Slow Path:     STM averages tint SensoryAvgState; binding 0 untouched
+	run(neuroInfluenceProgram);  // Arc 5 — Neuro ? Slow Path:      hormone levels tint SensoryAvgState; binding 0 untouched
+	run(langInfluenceProgram);   // Arc 9 — Language ? Slow Path:   linguistic stats tint SensoryAvgState; binding 0 untouched
+	run(decProgram);             // Arc 2 — State ? Decisions:      fast (binding 0) + slow (binding 13) ? decisionValue
+	run(brainstemProgram);       // BRAINSTEM: enforce directives on post-decision state; set captureBlocked
+	run(outputProgram);          //                                  Output pass
+	run(diasemProgram);          //                                  Derive intent from mind state
+	run(dianeuroProgram);        // Arc 4 — Memory+Neuro ? Interpretation: bias tone / urgency / confidence
+	run(diainpProgram);          //                                  CPU command overrides intent if present
+	run(dialogue1Program);       //                                  Generate output string
+	run(memUpdateProgram);       // Arc 3 — Decisions ? Memory:     temporal integration, salience, auto-capture
+	run(memCaptureProgram);      //          CPU-triggered manual snapshot (self-skips if no command pending)
+	run(memInjectProgram);       //          CPU-triggered state restore   (self-skips if no command pending)
+	run(neuroUpdateProgram);     // Arc 6 — State ? Neuro:          per-frame decay + CoreMindState excitations
+	run(langUpdateProgram);      // Arc 8 — CPU ? GPU:              integrate new utterance features into LinguisticLearning + spike neuro
 }
 
 AdjutantEngine::AdjutantEngine() : upTime(0.0), init(false), shouldClose(false)
@@ -363,6 +380,14 @@ bool AdjutantEngine::Init()
 	if (!(stateMachine.GetStateName(stateMachine.GetState()) == "UNKNOWN")) // Check if the state machine initialized correctly
 		stateMachine.SetState(AdjutantState::BOOTING); // Transition to BOOTING state
 	else speechEngine.QueueLine(*this, "Adjutant State Machine failed to initialize.");
+
+	if (!mAuditoryCortex.Init())
+		speechEngine.QueueLine(*this, "Warning: auditory cortex failed to initialize.");
+	else
+		mAuditoryCortex.Start();
+
+	mLangInputCortex.Init(mAuditoryCortex, mLangCortex);
+
 	return true; // Return true if initialization i	s successful
 }
 
@@ -586,6 +611,111 @@ void AdjutantEngine::InitGPU(Framework& fw)
 
 	GetSpeechEngine().QueueLine(*this, "Brainstem Kernel initialized. Core directives active.");
 
+	// =========================================================
+	// NEUROCHEMICAL KERNEL — programs + buffer (binding 12)
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this, "Initializing Neurochemical Kernel...");
+
+	GetGPU(fw, "src/Adjutant/GPU/neuro.shader");
+	std::string neuroUpdateSrc    = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "neuroupdate");
+	std::string neuroInfluenceSrc = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "neuroinfluence");
+
+	std::string neuroFullSrc = fw.GetFileLoader().LoadFile(fw.GetFileLoader().GetFilePath());
+	fw.GetFileLoader().RemoveSection(neuroFullSrc, "neuroupdate");
+	fw.GetFileLoader().RemoveSection(neuroFullSrc, "neuroinfluence");
+
+	neuroUpdateProgram    = CompileCompute(neuroFullSrc + neuroUpdateSrc);
+	neuroInfluenceProgram = CompileCompute(neuroFullSrc + neuroInfluenceSrc);
+
+	// binding 12 — NeurochemState: 6 active floats + 2 pad = 32 bytes
+	// Initial values: moderate focus + social baseline; all stress axes at zero.
+	{
+		NeurochemState initial{};
+		initial.focus  = 0.7f; // AI starts attentive
+		initial.social = 0.5f; // start at social baseline
+		glGenBuffers(1, &neuroBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, neuroBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(NeurochemState), &initial, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, neuroBuffer);
+	}
+
+	GetSpeechEngine().QueueLine(*this, "Neurochemical Kernel initialized successfully.");
+
+	// =========================================================
+	// SENSORY AVG KERNEL — program + buffer (binding 13)
+	// Slow sensory path: EMA of CoreMindState with a tunable half-life.
+	// Separates immediate reactive data (binding 0) from contextual
+	// modulation data (binding 13) fed independently to the decision kernel.
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this, "Initializing Sensory Avg Kernel...");
+
+	GetGPU(fw, "src/Adjutant/GPU/sensor.shader");
+	std::string sensorAvgSrc = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "sensoravg");
+
+	std::string sensorFullSrc = fw.GetFileLoader().LoadFile(fw.GetFileLoader().GetFilePath());
+	fw.GetFileLoader().RemoveSection(sensorFullSrc, "sensoravg");
+
+	sensorAvgProgram = CompileCompute(sensorFullSrc + sensorAvgSrc);
+
+	// binding 13 — SensoryAvgState: 4 EMA floats + halfLife + 3 pad = 32 bytes
+	// Initial values: all slow-path signals start at resting baseline.
+	// halfLife defaults to 5.0s — tunable at runtime via SetHalfLife().
+	{
+		SensoryAvgState saInitial{};
+		saInitial.halfLife = 5.0f; // 5-second EMA half-life; adjust per persona/session
+		glGenBuffers(1, &sensorAvgBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, sensorAvgBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(SensoryAvgState), &saInitial, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, sensorAvgBuffer);
+	}
+
+	GetSpeechEngine().QueueLine(*this, "Sensory Avg Kernel initialized. Dual-path sensory system active.");
+
+	// =========================================================
+	// LANGUAGE CORTEX KERNEL — programs + buffers (bindings 14-15)
+	// Arc 8 (#langupdate)    — CPU-pushed utterance features ? LinguisticLearning EMA + neuro spikes
+	// Arc 9 (#langinfluence) — linguistic stats tint the slow sensory path each frame
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this, "Initializing Language Cortex Kernel...");
+
+	GetGPU(fw, "src/Adjutant/GPU/language.shader");
+	std::string langUpdateSrc    = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "langupdate");
+	std::string langInfluenceSrc = fw.GetFileLoader().LoadShaderSection(fw.GetFileLoader().GetFilePath(), "langinfluence");
+
+	std::string langFullSrc = fw.GetFileLoader().LoadFile(fw.GetFileLoader().GetFilePath());
+	fw.GetFileLoader().RemoveSection(langFullSrc, "langupdate");
+	fw.GetFileLoader().RemoveSection(langFullSrc, "langinfluence");
+
+	langUpdateProgram    = CompileCompute(langFullSrc + langUpdateSrc);
+	langInfluenceProgram = CompileCompute(langFullSrc + langInfluenceSrc);
+
+	// binding 14 — LinguisticState: per-utterance feature vector (16 floats = 64 bytes)
+	// CPU writes lsUtteranceReady = 1.0 when new features are available.
+	{
+		LinguisticFeatures lsInitial{};
+		glGenBuffers(1, &linguisticStateBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, linguisticStateBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(LinguisticFeatures), &lsInitial, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 14, linguisticStateBuffer);
+	}
+
+	// binding 15 — LinguisticLearning: GPU-maintained EMA running stats (16 floats = 64 bytes)
+	// learningRate = 0.10 — integrates each utterance at 10% weight toward new value
+	{
+		LinguisticLearningData llInitial{};
+		llInitial.learningRate = 0.10f;
+		glGenBuffers(1, &linguisticLearningBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, linguisticLearningBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(LinguisticLearningData), &llInitial, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, linguisticLearningBuffer);
+	}
+
+	// Wire the language cortex to the speech engine so SpeakLine() can
+	// extract and stage features after each utterance's Pass 1 analysis.
+	GetSpeechEngine().SetLanguageCortex(&mLangCortex);
+
+	GetSpeechEngine().QueueLine(*this, "Language Cortex Kernel initialized. Linguistic processing active.");
+
 	// Cache deltaTime uniform locations once — avoids per-frame glGetUniformLocation driver overhead
 	// that would otherwise inflate DELTA_t measurements on the CPU
 	deltaTimeLocs[coreProgram]          = glGetUniformLocation(coreProgram,          "deltaTime");
@@ -604,6 +734,19 @@ void AdjutantEngine::InitGPU(Framework& fw)
 	deltaTimeLocs[memInjectProgram]     = glGetUniformLocation(memInjectProgram,     "deltaTime");
 	deltaTimeLocs[brainstemProgram]     = glGetUniformLocation(brainstemProgram,     "deltaTime");
 	deltaTimeLocs[brainstemEditProgram] = glGetUniformLocation(brainstemEditProgram, "deltaTime");
+	deltaTimeLocs[neuroUpdateProgram]   = glGetUniformLocation(neuroUpdateProgram,   "deltaTime");
+	deltaTimeLocs[neuroInfluenceProgram]= glGetUniformLocation(neuroInfluenceProgram,"deltaTime");
+	deltaTimeLocs[sensorAvgProgram]     = glGetUniformLocation(sensorAvgProgram,     "deltaTime");
+	deltaTimeLocs[langInfluenceProgram] = glGetUniformLocation(langInfluenceProgram, "deltaTime");
+	deltaTimeLocs[langUpdateProgram]    = glGetUniformLocation(langUpdateProgram,    "deltaTime");
+
+	// =========================================================
+	// LONG-TERM MEMORY BANK (CPU SSD) — load persisted memories
+	// =========================================================
+	GetSpeechEngine().QueueLine(*this, "Loading long-term memory bank...");
+	memoryMgr.LoadFile("src/Adjutant/Memories/mem1.mem");
+	GetSpeechEngine().QueueLine(*this, "Long-term memory bank loaded. " +
+		std::to_string(memoryMgr.Count()) + " memories available.");
 }
 
 void AdjutantEngine::BakeTemplates()
@@ -674,6 +817,8 @@ void AdjutantEngine::Update(double DELTA_t)
 
 	upTime += DELTA_t; // Increment up time by the delta time
 
+	mLangInputCortex.Update(DELTA_t); // Process microphone stream through the auditory pipeline
+
 	if (stateMachine.GetState() == AdjutantState::BOOTING && !speechEngine.HasLine())
 		stateMachine.SetState(AdjutantState::IDLE); // Boot speech drained — open input
 
@@ -682,6 +827,52 @@ void AdjutantEngine::Update(double DELTA_t)
 
 	//Update GPU logic for the AI OS
 	UpdateMindGPU(DELTA_t);
+
+	// LTM promotion: move GPU STM entries flagged ltmReady (bit0) into the CPU memory bank
+	{
+		MemoryRuntimeData rt = ReadMemoryRuntime();
+		if (rt.ltmReadyCount > 0)
+		{
+			MemoryDataSnapshot snap = ReadMemoryData();
+			bool promoted = false;
+			const std::string date = MemoryManager::CurrentDate();
+			const std::string time = MemoryManager::CurrentTime();
+
+			for (int i = 0; i < snap.memCount; i++)
+			{
+				if (!(snap.entries[i].flags & 1)) continue; // ltmReady bit not set
+
+				MemoryEntry e;
+				e.index          = static_cast<int>(memoryMgr.Count()) + 1;
+				e.timeCode       = snap.entries[i].timeCode;
+				e.dateCode       = snap.entries[i].dateCode;
+				e.user           = registeredUser.name;
+				e.date           = date;
+				e.time           = time;
+				e.idleTimer      = snap.entries[i].idleTimer;
+				e.emotionalState = snap.entries[i].emotionalState;
+				e.contextValue   = snap.entries[i].contextValue;
+				e.decisionValue  = snap.entries[i].decisionValue;
+				e.salienceScore  = snap.entries[i].salienceScore;
+				e.priorityScore  = snap.entries[i].priorityScore;
+				e.noveltyScore   = snap.entries[i].noveltyScore;
+				e.flags          = snap.entries[i].flags & ~1; // clear ltmReady on the LTM copy
+				memoryMgr.AddEntry(e);
+
+				snap.entries[i].flags &= ~1; // clear ltmReady on the GPU copy
+				promoted = true;
+			}
+
+			if (promoted)
+			{
+				// Write back the cleared ltmReady flags to the GPU STM buffer
+				constexpr GLsizeiptr MEM_DATA_SIZE = 4 * sizeof(GLint) + 64 * 12 * sizeof(GLfloat);
+				glBindBuffer(GL_SHADER_STORAGE_BUFFER, memDataBuffer);
+				glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, MEM_DATA_SIZE, &snap);
+				memoryMgr.SaveFile("src/Adjutant/Memories/mem1.mem");
+			}
+		}
+	}
 
 	// Read back DialogueSemantic (binding 1) to detect GPU-side shutdown signal
 	{
@@ -705,6 +896,12 @@ void AdjutantEngine::Update(double DELTA_t)
 
 void AdjutantEngine::Clean()
 {
+	// Persist long-term memories to SSD before shutdown
+	memoryMgr.SaveFile("src/Adjutant/Memories/mem1.mem");
+
+	mAuditoryCortex.Stop();
+	mAuditoryCortex.Clean();
+
 	// Clean up resources
 	upTime = 0.0;
 	init = false;

@@ -23,12 +23,24 @@ layout(std430, binding = 0) buffer CoreMindState
 
 uniform float deltaTime;
 
-// ================================================================
-// CORE COMPUTE SHADER LOGIC
-// This is where the main logic of the GPU mind will be implemented,
-// including the processing of the mind state, decision making, and
-// any other computations necessary for the GPU mind to function
-// ================================================================
+// =================================================================
+// SENSORY AVERAGE STATE BUFFER  (binding 13)
+// Slow path: exponential moving average of CoreMindState.
+// Read in the decision kernel as a second independent input alongside
+// the immediate fast path (binding 0). Never written from this file.
+// =================================================================
+
+layout(std430, binding = 13) buffer SensoryAvgState
+{
+	float slowIdleTimer;
+	float slowEmotional;
+	float slowContext;
+	float slowDecision;
+	float halfLife;
+	float saPad0;
+	float saPad1;
+	float saPad2;
+};
 
 #core
 
@@ -114,12 +126,26 @@ void main()
 #dec
 
 // Arc 2 — State → Decisions
-// Decision pressure rises when emotional urgency and available context are both high.
-// decisionValue converges toward their product, decaying toward zero when either is absent.
-void DecisionUpdate() 
+// Two independent inputs drive decision pressure:
+//   Fast path (binding 0): immediate emotionalState × contextValue — high-bandwidth,
+//     reactive; responds instantly to the current sensory frame.
+//   Slow path (binding 13): slowEmotional × slowContext — low-bandwidth EMA with a
+//     tunable half-life; provides an inertial contextual floor that prevents
+//     reactive overreaction and anchors decisions in accumulated experience.
+// The two signals are never collapsed before entering this kernel. Fast (0.7)
+// dominates acute response; slow (0.3) sustains contextual baseline.
+void DecisionUpdate()
 {
-	float decPressure = clamp(emotionalState * contextValue, 0.0, 1.0);
-	decisionValue = mix(decisionValue, decPressure, clamp(deltaTime * 1.5, 0.0, 1.0));
+	// Fast path: high-bandwidth reactive pressure.
+	float fastPressure = clamp(emotionalState * contextValue, 0.0, 1.0);
+
+	// Slow path: contextual pressure from the time-averaged state.
+	float slowPressure = clamp(slowEmotional * slowContext, 0.0, 1.0);
+
+	// Both paths contribute independently. decisionValue converges toward
+	// their weighted combination — fast dominates, slow anchors.
+	float pressure = clamp(fastPressure * 0.7 + slowPressure * 0.3, 0.0, 1.0);
+	decisionValue  = mix(decisionValue, pressure, clamp(deltaTime * 1.5, 0.0, 1.0));
 }
 
 void main()

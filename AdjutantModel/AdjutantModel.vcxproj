@@ -140,6 +140,8 @@
     <ClCompile Include="src\Adjutant\CommandSystem.cpp" />
     <ClCompile Include="src\Adjutant\Memories\Memory.cpp" />
     <ClCompile Include="src\Adjutant\MessageBus.cpp" />
+    <ClCompile Include="src\Adjutant\Speech\AuditoryCortex.cpp" />
+    <ClCompile Include="src\Adjutant\Speech\LanguageInputCortex.cpp" />
     <ClCompile Include="src\Adjutant\Speech\SpeechEngine.cpp" />
     <ClCompile Include="src\Adjutant\Speech\Voice\VoiceOutputEngine.cpp" />
     <ClCompile Include="src\Adjutant\StateMachine.cpp" />
@@ -160,15 +162,19 @@
     <ClInclude Include="src\Adjutant\Memories\Memory.h" />
     <ClInclude Include="src\Adjutant\Memories\MemoryEntry.h" />
     <ClInclude Include="src\Adjutant\MessageBus.h" />
+    <ClInclude Include="src\Adjutant\Speech\AuditoryCortex.h" />
     <ClInclude Include="src\Adjutant\Speech\BeepSynth.h" />
+    <ClInclude Include="src\Adjutant\Speech\LanguageInputCortex.h" />
     <ClInclude Include="src\Adjutant\Speech\SpeechEngine.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\GrammarRules.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\Language.h" />
+    <ClInclude Include="src\Adjutant\Speech\Voice\Language\LanguageCortex.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\LanguageDictionary.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\MorphologyRules.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\OrthographyRules.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\PartOfSpeech.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\PhonologyRules.h" />
+    <ClInclude Include="src\Adjutant\Speech\Voice\Language\ProsodyDictionary.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\ProsodyRules.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Language\SyntaxRules.h" />
     <ClInclude Include="src\Adjutant\Speech\Voice\Vocalics\FootParser.h" />
@@ -204,12 +210,16 @@
     <None Include="src\Adjutant\GPU\brainstem.shader" />
     <None Include="src\Adjutant\GPU\core.shader" />
     <None Include="src\Adjutant\GPU\dialogue1.shader" />
+    <None Include="src\Adjutant\GPU\language.shader" />
     <None Include="src\Adjutant\GPU\memory.shader" />
+    <None Include="src\Adjutant\GPU\neuro.shader" />
+    <None Include="src\Adjutant\GPU\sensor.shader" />
     <None Include="src\Adjutant\Memories\mem1.mem" />
     <None Include="src\Adjutant\Speech\Database\database1.dat" />
     <None Include="src\Adjutant\Speech\Database\targetOrgs.dat" />
     <None Include="src\Adjutant\Speech\Database\targetPeople.dat" />
     <None Include="src\Adjutant\Speech\Voice\Language\Dictionary\en_US.dict" />
+    <None Include="src\Adjutant\Speech\Voice\Language\Dictionary\en_US.prosody" />
     <None Include="src\Adjutant\Speech\Voice\Vocalics\Phonemes.dat" />
     <None Include="src\Adjutant\Speech\Voice\Vocalics\Syllables.dat" />
   </ItemGroup>

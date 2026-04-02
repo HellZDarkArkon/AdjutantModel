@@ -113,6 +113,18 @@ const int CMD_PLAYX  = 5;
 
 uniform float deltaTime;
 
+layout(std430, binding = 12) buffer NeurochemState
+{
+	float reward;
+	float threat;
+	float novelty;
+	float focus;
+	float fatigue;
+	float social;
+	float neuroPad0;
+	float neuroPad1;
+};
+
 #diasem
 
 void DialogueSemanticUpdate()
@@ -169,10 +181,29 @@ void DialogueMemoryUpdate()
 	confidence = clamp(confidence + avgContextValue * 0.2, 0.0, 1.0);
 }
 
+void DialogueNeuroUpdate()
+{
+	// Threat raises urgency floor — high cortisol/adrenaline demands immediate attention.
+	urgency = clamp(max(urgency, threat * 0.8), 0.0, 1.0);
+
+	// Reward (dopamine/endorphin) shifts tone toward positive.
+	if (reward > 0.2)
+		tone = clamp(tone + reward * 0.5, -1.0, 1.0);
+
+	// Fatigue (adenosine) erodes confidence; focused attention (NE/ACh) restores it.
+	confidence = clamp(confidence - fatigue * 0.35 + focus * 0.25, 0.0, 1.0);
+
+	// Unmet social need (oxytocin/serotonin rising) nudges a neutral idle toward
+	// context-shifting — Adjutant volunteers engagement rather than staying silent.
+	if (social > 0.7 && intent == INTENT_NONE)
+		intent = INTENT_CONTEXT_SHIFT;
+}
+
 void main()
 {
 	DialoguePersonalityUpdate();
 	DialogueMemoryUpdate();
+	DialogueNeuroUpdate();
 }
 
 #dialogue1

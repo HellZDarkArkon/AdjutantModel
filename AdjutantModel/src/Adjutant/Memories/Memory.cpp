@@ -97,6 +97,11 @@ void MemoryManager::SaveFile(const std::string& filePath) const
     }
 }
 
+void MemoryManager::AddEntry(const MemoryEntry& e)
+{
+    entries.push_back(e);
+}
+
 void MemoryManager::CaptureFromGPU(GLuint stateBuffer, const std::string& user,
                                    const std::string& date, const std::string& time)
 {
@@ -195,6 +200,10 @@ MemoryEntry MemoryManager::ParseBlock(int index, int timeCode,
         else if (key == "emotionalState") { try { e.emotionalState = std::stof(val); } catch (...) {} }
         else if (key == "contextValue")   { try { e.contextValue   = std::stof(val); } catch (...) {} }
         else if (key == "decisionValue")  { try { e.decisionValue  = std::stof(val); } catch (...) {} }
+        else if (key == "salienceScore")  { try { e.salienceScore  = std::stof(val); } catch (...) {} }
+        else if (key == "priorityScore")  { try { e.priorityScore  = std::stof(val); } catch (...) {} }
+        else if (key == "noveltyScore")   { try { e.noveltyScore   = std::stof(val); } catch (...) {} }
+        else if (key == "flags")          { try { e.flags          = std::stoi(val); } catch (...) {} }
     }
 
     return e;
@@ -210,7 +219,11 @@ std::string MemoryManager::FormatBlock(const MemoryEntry& e)
     ss << "idleTimer="      << e.idleTimer      << "\n";
     ss << "emotionalState=" << e.emotionalState << "\n";
     ss << "contextValue="   << e.contextValue   << "\n";
-    ss << "decisionValue="  << e.decisionValue;
+    ss << "decisionValue="  << e.decisionValue  << "\n";
+    ss << "salienceScore="  << e.salienceScore  << "\n";
+    ss << "priorityScore="  << e.priorityScore  << "\n";
+    ss << "noveltyScore="   << e.noveltyScore   << "\n";
+    ss << "flags="          << e.flags;
     return ss.str();
 }
 

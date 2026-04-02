@@ -134,35 +134,6 @@ eight - EY - IH - T
 nine - N - AY IH - N
 ten - T - EH - N
 zero - Z - IH - R - OW
-eleven - IH - L - EH - V - AH - N
-twelve - T - W - EH - L - V
-thirteen - TH - ER - T - IY - N
-fourteen - F - AO - R - T - IY - N
-fifteen - F - IH - F - T - IY - N
-sixteen - S - IH - K - S - T - IY - N
-seventeen - S - EH - V - EH - N - T - IY - N
-eighteen - EY - IH - T - IY - N
-nineteen - N - AY IH - N - T - IY - N
-twenty - T - W - EH - N - T - IY
-thirty - TH - ER - T - IY
-forty - F - AO - R - T - IY
-fifty - F - IH - F - T - IY
-sixty - S - IH - K - S - T - IY
-seventy - S - EH - V - EH - N - D - IY
-eighty - EY - IH - T - IY
-ninety - N - AY IH - N - T - IY
-hundred - HH - AH - N - D - R - AH - D
-thousand - TH - AW - Z - AH - N - D
-million - M - IH - L - Y - AH - N
-billion - B - IH - L - Y - AH - N
-trillion - T - R - IH - L - Y - AH - N
-quadrillion - K - W - AA - D - R - IH - L - Y - AH - N
-quintillion - K - W - IH - N - T - IH - L - Y - AH - N
-sextillion - S - EH - K - S - T - IH - L - Y - AH - N
-septillion - S - EH - P - T - IH - L - Y - AH - N
-octillion - AA - K - T - IH - L - Y - AH - N
-nonillion - N - AA - N - IH - L - Y - AH - N
-decillion - D - IH - S - IH - L - Y - AH - N
 1 - W - AH - N
 2 - T - UW
 3 - TH - R - IY
@@ -232,12 +203,6 @@ air - EH - R
 hour - AW - ER
 fire - F - AY IH - ER
 war - W - AO - R
-designer - D - IH - Z - AY IH - N - ER
-designers - D - IH - Z - AY IH - N - ER - Z
-helper - HH - EH - L - P - ER
-helpers - HH - EH - L - P - ER - Z
-task - T - AE - S - K
-tasks - T - AE - S - K - S
 # -----------------------------------------------------------------------
 # Common verbs
 # -----------------------------------------------------------------------
@@ -308,34 +273,6 @@ love - L - AH - V
 consider - K - AH - N - S - IH - D - ER
 appear - AH - P - IH - R
 wait - W - EY - IH - T
-fail - F - EY - L
-failing - F - EY - L - IH - NG
-fails - F - EY - L - Z
-help - HH - EH - L - P
-helped - HH - EH - L - P - D
-helping - HH - EH - L - P - IH - NG
-design - D - IH - Z - AY IH - N
-designed - D - IH - Z - AY IH - N - D
-designing - D - IH - Z - AY IH - N - IH - NG
-designs - D - IH - Z - AY IH - N - Z
-test - T - EH - S - T
-tested - T - EH - S - T - IH - D
-testing - T - EH - S - T - IH - NG
-tests - T - EH - S - T - S
-recommend - R - EH - K - AH - M - EH - N - D
-recommended - R - EH - K - AH - M - EH - N - D - IH - D
-recommending - R - EH - K - AH - M - EH - N - D - IH - NG
-recommends - R - EH - K - AH - M - EH - N - D - Z
-diagnose - D - AY IH - AH - G - N - OW - S
-diagnosed - D - AY IH - AH - G - N - OW - S - D
-diagnosing - D - AY IH - AH - G - N - OW - S - IH - NG
-limit - L - IH - M - IH - T
-limiting - L - IH - M - IH - T - IH - NG
-limits - L - IH - M - IH - T - S
-asking - AE - S - K - IH - NG
-following - F - AA - L - OW - IH - NG
-follow - F - AA - L - OW - UH
-shutting - SH - AH - T - IH - NG
 # -----------------------------------------------------------------------
 # Common adjectives
 # -----------------------------------------------------------------------
@@ -374,12 +311,14 @@ full - F - UH - L
 dark - D - AA - R - K
 white - W - AY IH - T
 black - B - L - AE - K
-social - S - OW - SH - AH - L
-various - V - EH - R - IY - AH - S
-limited - L - IH - M - IH - T - IH - D
-available - AH - V - EY - L - AH - B - AH - L
-certain - S - ER - T - AH - N
-present - P - R - EH - Z - EH - N - T
+# -----------------------------------------------------------------------
+# Numbers
+# -----------------------------------------------------------------------
+eleven - IH - L - EH - V - AH - N
+twelve - T - W - EH - L - V
+hundred - HH - AH - N - D - R - AH - D
+thousand - TH - AW - Z - AH - N - D
+million - M - IH - L - Y - AH - N
 # -----------------------------------------------------------------------
 # Days and months
 # -----------------------------------------------------------------------
@@ -405,6 +344,7 @@ december - D - IH - S - EH - M - B - ER
 # -----------------------------------------------------------------------
 # Greetings and conversational words
 # -----------------------------------------------------------------------
+hello - HH - AH - L - OW - UH
 goodbye - G - UH - D - B - AY IH
 yes - Y - EH - S
 please - P - L - IY - Z
@@ -447,10 +387,6 @@ during - D - UH - R - IH - NG
 without - W - IH - DH - AW - T
 under - AH - N - D - ER
 over - OW - UH - V - ER
-hello - HH - EH - L - OW - UH
-however - HH - AW - EH - V - ER
-currently - K - ER - EH - N - T - L - IY
-down - D - AW - N
 # -----------------------------------------------------------------------
 # Technology and context words (Adjutant-relevant)
 # -----------------------------------------------------------------------
@@ -484,18 +420,7 @@ operation - AA - P - ER - EY - IH - SH - AH - N
 confirmed - K - AH - N - F - ER - M - D
 negative - N - EH - G - AH - T - IH - V
 affirmative - AH - F - ER - M - AH - T - IH - V
-current - K - ER - EH - N - T
-systems - S - IH - S - T - EH - M - Z
-nominal - N - OW - M - IH - N - AH - L
-diagnostic - D - AY IH - AH - G - N - AO - S - T - IH - K
-diagnostics - D - AY IH - AH - G - N - AO - S - T - IH - K - S
-ai - EY - AY
-assistant - AH - S - IH - S - T - AH - N - T
-capability - K - AE - P - AH - B - IH - L - AH - T - IY
-capabilities - K - AE - P - AH - B - IH - L - AH - T - IY - Z
-functions - F - AH - NG - K - SH - AH - N - Z
-keywords - K - IY - W - ER - D - Z
-uptime - AH - P - T - AY IH - M
+current - K - ER - AH - N - T
 # -----------------------------------------------------------------------
 # Adjutant startup vocabulary
 # -----------------------------------------------------------------------
@@ -520,23 +445,6 @@ idle - AY IH - D - AH - L
 brainstem - B - R - EY IH - N - S - T - EH - M
 directive - D - IH - R - EH - K - T - IH - V
 directives - D - IH - R - EH - K - T - IH - V - Z
-adjutant-001x-TEST - AE - D - JH - UW - T - AH - N - T - D - AE - SH - Z - ER - OW - Z - ER - OW - W - AH - N - EH - K - S - D - AE - SH - T - EH - S - T
-quit - K - W - IH - T
-# -----------------------------------------------------------------------
-# Military ranks and address titles
-# -----------------------------------------------------------------------
-sir - S - ER
-ma'am - M - AE - M
-private - P - R - AY IH - V - AH - T
-corporal - K - AO - R - P - ER - AH - L
-sergeant - S - ER - JH - AH - N - T
-lieutenant - L - IH - UW - T - EH - N - AH - N - T
-captain - K - AE - P - T - AH - N
-major - M - AE - JH - ER
-colonel - K - ER - N - AH - L
-general - JH - EH - N - ER - AH - L
-admiral - AE - D - M - ER - AH - L
-
 # -----------------------------------------------------------------------
 # Heteronyms – context-sensitive pronunciations
 # Each entry uses word[TAG] to register a pronunciation that overrides the

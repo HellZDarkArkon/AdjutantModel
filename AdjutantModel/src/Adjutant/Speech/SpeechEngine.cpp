@@ -1,6 +1,7 @@
 #include "SpeechEngine.h"
 #include "../AdjutantEngine.h"
 #include "Voice/Vocalics/PhraseContour.h"
+#include "Voice/Language/LanguageCortex.h"
 #include <sstream>
 #include <cctype>
 #include <cmath>
@@ -77,6 +78,16 @@ void SpeechEngine::LoadLanguage(const std::string& dictPath)
 	mDict.SetCaseSensitive(false);
 	mLanguageLoaded = mDict.Load(dictPath);
 
+	// Derive the companion .prosody path from the dict path and load it.
+	// Missing file is silently ignored; prosodic overrides simply won't apply.
+	{
+		std::string prosodyPath = dictPath;
+		auto dotPos = prosodyPath.rfind('.');
+		if (dotPos != std::string::npos)
+			prosodyPath = prosodyPath.substr(0, dotPos) + ".prosody";
+		mProsodyDict.Load(prosodyPath);
+	}
+
 	IntonationModel::Params p;
 	p.baseF0             = 220.0;  // female vocal range (Hz)
 	p.primaryF0Scale     = 1.30;   // wider pitch excursions on stressed syllables
@@ -144,6 +155,7 @@ double SpeechEngine::SpeakLine(const std::string& text, VoiceOutputEngine& vo)
 		double                   startSec;
 		double                   durationSec;
 		std::vector<double>      phraseF0Bases;  // one per syllable
+		std::string              wordText;        // original (lowercased) token
 	};
 
 	auto tagged = PhraseSegmenter::Tokenize(text);
@@ -201,6 +213,7 @@ double SpeechEngine::SpeakLine(const std::string& text, VoiceOutputEngine& vo)
 		wd.startSec    = cursor;
 		wd.durationSec = dur;
 		wd.phraseF0Bases.assign(flatSyls.size(), mIntonationModel.GetBaseF0());
+		wd.wordText    = tagged[ti].word;
 
 		tagToWord[ti] = (int)words.size();
 		words.push_back(std::move(wd));
@@ -248,47 +261,129 @@ double SpeechEngine::SpeakLine(const std::string& text, VoiceOutputEngine& vo)
 			if (phraseDur < 1e-6) phraseDur = 1e-6;
 
 				std::vector<StressLevel>          phraseStress;
-				std::vector<double>               phraseTimes;
-				std::vector<std::pair<int, int>>  phraseSylIds;
+					std::vector<double>               phraseTimes;
+					std::vector<std::pair<int, int>>  phraseSylIds;
+					std::vector<PitchAccentType>      accentOverrides;
 
-				for (int wi : phrase.wordIndices)
-				{
-					mMoraicGrid.Compute(words[wi].pw);
-					const auto& timings = mMoraicGrid.Syllables();
-					auto flatSyls       = words[wi].pw.FlatSyllables();
-
-					for (int si = 0; si < (int)words[wi].phraseF0Bases.size(); ++si)
+					for (int wi : phrase.wordIndices)
 					{
-						double sylMid = words[wi].startSec
-							+ (si < (int)timings.size()
-								? timings[si].startSeconds + timings[si].durationSeconds * 0.5
-								: words[wi].durationSec * 0.5);
-						double tPhrase = (sylMid - phraseStart) / phraseDur;
-						words[wi].phraseF0Bases[si] =
-							mIntonationModel.GetBaseF0()
-							* PhraseContour::Multiplier(tPhrase, phrase.type, cp);
+						// Look up prosody dictionary entry for this word + phrase type.
+						// When found and the syllable count matches, override the stress
+						// pattern in the ProsodicWord so MoraicGrid and FlatSyllables()
+						// both reflect the dictionary values.
+						const ProsodyEntry* prosEntry =
+							mProsodyDict.Lookup(words[wi].wordText, phrase.type);
+						if (prosEntry
+							&& (int)prosEntry->stress.size() == words[wi].pw.TotalSyllables())
+							words[wi].pw.stressOverride = prosEntry->stress;
+						else
+							words[wi].pw.stressOverride.clear();
 
-						phraseStress.push_back(si < (int)flatSyls.size()
-							? flatSyls[si].second : StressLevel::UNSTRESSED);
-						phraseTimes.push_back(tPhrase);
-						phraseSylIds.emplace_back(wi, si);
+						mMoraicGrid.Compute(words[wi].pw);
+						const auto& timings = mMoraicGrid.Syllables();
+						auto flatSyls       = words[wi].pw.FlatSyllables();
+
+						for (int si = 0; si < (int)words[wi].phraseF0Bases.size(); ++si)
+						{
+							double sylMid = words[wi].startSec
+								+ (si < (int)timings.size()
+									? timings[si].startSeconds + timings[si].durationSeconds * 0.5
+									: words[wi].durationSec * 0.5);
+							double tPhrase = (sylMid - phraseStart) / phraseDur;
+							words[wi].phraseF0Bases[si] =
+								mIntonationModel.GetBaseF0()
+								* PhraseContour::Multiplier(tPhrase, phrase.type, cp);
+
+							StressLevel sl = si < (int)flatSyls.size()
+										   ? flatSyls[si].second : StressLevel::UNSTRESSED;
+							phraseStress.push_back(sl);
+							phraseTimes.push_back(tPhrase);
+							phraseSylIds.emplace_back(wi, si);
+
+							// Pitch accent override: inject the dictionary accent for the
+							// primary syllable when the entry specifies a non-AUTO value.
+							PitchAccentType ao = PitchAccentType::AUTO;
+							if (prosEntry && !prosEntry->accentIsAuto
+								&& sl == StressLevel::PRIMARY)
+								ao = prosEntry->accent;
+							accentOverrides.push_back(ao);
+						}
 					}
-				}
 
-				// Apply pitch accent coarticulation: consecutive accented syllables
-				// modify each other's F0 target according to the rule table.
-				{
-					std::vector<double> flatF0;
-					flatF0.reserve(phraseSylIds.size());
-					for (auto& [wi, si] : phraseSylIds)
-						flatF0.push_back(words[wi].phraseF0Bases[si]);
+					// Apply pitch accent coarticulation: consecutive accented syllables
+					// modify each other's F0 target according to the rule table.
+					{
+						std::vector<double> flatF0;
+						flatF0.reserve(phraseSylIds.size());
+						for (auto& [wi, si] : phraseSylIds)
+							flatF0.push_back(words[wi].phraseF0Bases[si]);
 
-					mPitchAccentModel.Apply(phraseStress, phraseTimes, phrase.type, flatF0);
+						mPitchAccentModel.Apply(phraseStress, phraseTimes, phrase.type,
+												flatF0, accentOverrides);
 
-					for (int i = 0; i < (int)phraseSylIds.size(); ++i)
-						words[phraseSylIds[i].first].phraseF0Bases[phraseSylIds[i].second] = flatF0[i];
-				}
+						for (int i = 0; i < (int)phraseSylIds.size(); ++i)
+							words[phraseSylIds[i].first].phraseF0Bases[phraseSylIds[i].second] = flatF0[i];
+					}
 			}
+	}
+
+	// -----------------------------------------------------------------------
+	// Language Cortex — extract linguistic features from the completed
+	// Pass 1 analysis.  All phraseF0Bases and stress overrides are
+	// finalized at this point, so features reflect the full prosodic picture.
+	// The cortex marks itself dirty; AdjutantEngine uploads to GPU binding 14
+	// at the start of the next UpdateMindGPU frame.
+	// -----------------------------------------------------------------------
+	if (mLangCortex)
+	{
+		int oovCnt = 0;
+		for (int ti = 0; ti < (int)tagged.size(); ++ti)
+			if (tagToWord[ti] < 0) oovCnt++;
+
+		int   phonCnt = 0, sylCnt = 0;
+			int   stressPri = 0, stressSec = 0, stressUnst = 0;
+			double f0Sum = 0.0; int f0N = 0;
+			double durSum = 0.0;
+			std::vector<std::string> wordTexts;
+			wordTexts.reserve(words.size());
+
+			for (auto& wd : words)
+			{
+				wordTexts.push_back(wd.wordText);
+				auto flat = wd.pw.FlatSyllables();
+				sylCnt += (int)flat.size();
+				for (auto& [syl, stress] : flat)
+				{
+					phonCnt += (int)syl.GetAll().size();
+					if      (stress == StressLevel::PRIMARY)   stressPri++;
+					else if (stress == StressLevel::SECONDARY) stressSec++;
+					else                                       stressUnst++;
+				}
+				for (double f0 : wd.phraseF0Bases) { f0Sum += f0; f0N++; }
+				durSum += wd.durationSec;
+			}
+
+			float avgF0Hz      = (f0N    > 0) ? (float)(f0Sum / f0N)              : 220.0f;
+		float avgSyllDurMs = (sylCnt > 0) ? (float)(durSum / sylCnt * 1000.0) : 0.0f;
+
+		float stressEntr = 0.0f;
+		int stressTotal  = stressPri + stressSec + stressUnst;
+		if (stressTotal > 0)
+		{
+			auto H = [](float p) { return (p > 0.0f) ? -p * std::log2f(p) : 0.0f; };
+			float pPri  = (float)stressPri  / stressTotal;
+			float pSec  = (float)stressSec  / stressTotal;
+			float pUnst = (float)stressUnst / stressTotal;
+			stressEntr  = (H(pPri) + H(pSec) + H(pUnst)) / std::log2f(3.0f);
+		}
+
+		PhraseType dominant = PhraseType::NEUTRAL;
+		for (int ti = (int)tagged.size() - 1; ti >= 0; --ti)
+			if (tagged[ti].isBoundary) { dominant = tagged[ti].phraseType; break; }
+
+		mLangCortex->RecordWords(wordTexts);
+		mLangCortex->Analyze((int)words.size(), phonCnt, sylCnt, oovCnt,
+							 avgF0Hz, avgSyllDurMs, stressEntr, dominant);
 	}
 
 	// -----------------------------------------------------------------------
