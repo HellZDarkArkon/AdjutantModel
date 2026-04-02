@@ -245,13 +245,27 @@ public:
 					p.f3Carry        = f3Carry;
 				}
 
-				result.back().push_back(p);
-				++phonemeIdx;
-			}
-		}
+						result.back().push_back(p);
+							++phonemeIdx;
+						}
+					}
 
-		return result;
-	}
+					// Stitch F0 at syllable boundaries: average each adjacent pair so
+					// GlottalSource sees a continuous pitch trajectory rather than a jump
+					// produced by independent per-syllable F0 targets.
+					// Diphthong glides are skipped — their f0Start is already set to
+					// f0Carry (the carrier's terminal pitch).
+					for (int si = 0; si < nSyl - 1; ++si)
+					{
+						if (result[si].empty() || result[si + 1].empty()) continue;
+						if (result[si + 1].front().f1Carry > 0.0) continue;
+						double mid = (result[si].back().f0End + result[si + 1].front().f0Start) * 0.5;
+						result[si].back().f0End        = mid;
+						result[si + 1].front().f0Start = mid;
+					}
+
+					return result;
+				}
 
 	// -----------------------------------------------------------------------
 	// Parameters (set directly, or populated by LoadParams() / ApplyParams())

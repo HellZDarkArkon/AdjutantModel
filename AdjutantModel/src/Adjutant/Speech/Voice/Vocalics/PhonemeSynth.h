@@ -40,6 +40,7 @@ public:
 		for (size_t i = 0; i < totalSamples; i++)
 		{
 			double t = static_cast<double>(i) / mSampleRate;
+			double vibratoDepth = (t > 0.050) ? 0.012 * min(1.0, (t - 0.050) / 0.080) : 0.0;
 			double vibratoDepth = (t > 0.050) ? 0.003 * min(1.0, (t - 0.050) / 0.060) : 0.0;
 			double vibrato = 1.0 + vibratoDepth * sin(TAU * 6.2 * t);
 			double s = GlottalSource(t, pitchHz*vibrato);
@@ -56,6 +57,7 @@ public:
 			}
 			mLastPhase = mGlottalPhase; // Update the last phase for the next iteration
 			s *= mShimmer * mMicroShimmer; // Apply shimmer to the glottal source signal to create a more natural sound (adjustable based on desired effect)
+			mTiltCoeff = 0.88 + 0.02 * sin(TAU * 0.7 * t);
 			mTiltCoeff = 0.20 + 0.05 * sin(TAU * 0.7 * t);
 			s = SpectralTilt(s);
 			s += WhiteNoise() * 0.048;
@@ -116,6 +118,8 @@ public:
 		double bw5 = phoneme.GetBandwidth5() > 0.0 ? phoneme.GetBandwidth5() : 250.0;
 		bw2 *= 1.20;
 		bw3 *= 1.30;
+		bw4 *= 1.50;
+		bw5 *= 2.00;
 		double f1o = hasCarry ? params.f1Carry : f1t;
 		double f2o = hasCarry ? params.f2Carry : f2t;
 		double f3o = hasCarry ? params.f3Carry : f3t;
@@ -142,6 +146,7 @@ public:
 
 			// F0 glides linearly from f0Start to f0End over the phoneme window
 			double pitchHz = params.f0Start + (params.f0End - params.f0Start) * tNorm;
+			double vibratoDepth = (t > 0.050) ? 0.012 * min(1.0, (t - 0.050) / 0.080) : 0.0;
 			double vibratoDepth = (t > 0.050) ? 0.003 * min(1.0, (t - 0.050) / 0.060) : 0.0;
 			double vibrato = 1.0 + vibratoDepth * sin(TAU * 6.2 * t);
 
@@ -159,6 +164,7 @@ public:
 			}
 			mLastPhase = mGlottalPhase;
 			s *= mShimmer * mMicroShimmer;
+			mTiltCoeff = 0.88 + 0.020 * sin(TAU * 0.7 * t);
 			mTiltCoeff = 0.20 + 0.05 * sin(TAU * 0.7 * t);
 			s  = SpectralTilt(s);
 			if (hasCarry)
@@ -417,6 +423,7 @@ private:
 		double ss = 0.0;
 		for (double s : raw) ss += s * s;
 		double rms = std::sqrt(ss / raw.size());
+		double gain = (rms > 1e-9) ? (targetRms * (std::min)(1.4, mCurrentAmpScale)) / rms : 1.0;
 		double gain = (rms > 1e-9) ? (targetRms * (std::min)(1.0, mCurrentAmpScale)) / rms : 1.0;
 		std::vector<short> out(raw.size());
 		for (size_t i = 0; i < raw.size(); i++)
@@ -448,6 +455,11 @@ private:
 		double bw2 = ph.GetBandwidth2() > 0.0 ? ph.GetBandwidth2() : 100.0;
 		double f3  = ph.GetFormant3()   > 0.0 ? ph.GetFormant3()   : 2200.0; // upper pole
 		double bw3 = ph.GetBandwidth3() > 0.0 ? ph.GetBandwidth3() : 200.0;
+		bw2 *= 1.35;
+		bw3 *= 1.45;
+		double nzFreq = f2 * 0.80;
+		AntiFormant nasalZero;
+		nasalZero.Setup(nzFreq, 600.0, mSampleRate);
 
 		// F4/F5 are unused in nasal data (0.0); seed them with extrapolated values
 		// so the filter chain is numerically well-behaved.
@@ -460,6 +472,14 @@ private:
 			double t = static_cast<double>(i) / mSampleRate;
 			double s = GlottalSource(t, pitchHz) * 0.6; // nasals are low-energy murmurs
 			s = SpectralTilt(s);
+			s = mF1.Process(s);       // murmur pole — couples oral + nasal cavity resonance
+			s = nasalZero.Process(s); // nasal zero: spectral anti-formant at ~0.80 × F2
+			s = mF2.Process(s);       // nasal formant pole (place-dependent)
+			s = mF3.Process(s);       // upper pole
+			s *= ConsonantEnvelope(t, dur);
+			raw[i] = s;
+		}
+		return NormaliseAndConvert(raw, 0.18);
 			s = mF1.Process(s);  // murmur pole — couples oral + nasal cavity resonance
 			s = mF2.Process(s);  // nasal formant pole (place-dependent)
 			s = mF3.Process(s);  // upper pole
@@ -549,7 +569,14 @@ private:
 					s = GlottalSource(t, f0);
 					s = SpectralTilt(s);
 					s = mF1.Process(mF2.Process(mF3.Process(mF4.Process(mF5.Process(s)))));
-					s *= vr * 0.08;
+					s *= vr * 0.12;
+				}
+				else
+				{
+					double g = GlottalSource(t, f0);
+					(void)SpectralTilt(g);
+					(void)mF1.Process(mF2.Process(mF3.Process(mF4.Process(mF5.Process(g)))));
+					s = WhiteNoise() * nl * 0.015;
 				}
 				else
 				{
@@ -642,10 +669,10 @@ private:
 		double vr  = ph.GetVoicingRatio();
 		double f0  = mCurrentF0; // fundamental for voiced coupling
 
-		// Stage 1: sub-constriction high-pass (removes sub-glottal rumble)
+		// Stage 1: Butterworth sub-constriction high-pass (proper spectral trough below frication band)
 		double hpFc = nf * 0.25;
-		BandPass hpFilt;
-		hpFilt.Setup(hpFc, hpFc * 2.0, mSampleRate);
+		HighPass hpFilt;
+		hpFilt.Setup(hpFc, mSampleRate);
 
 		// Stage 2: front-cavity band-pass (place-dependent spectral peak)
 		BandPass fpFilt;
@@ -658,31 +685,51 @@ private:
 		SetupFormants(ph, !mInWord);
 		if (!mInWord) { mGlottalPhase = 0.0; mTiltState = 0.0; mShimmer = 1.0; mLastPhase = 0.0; }
 
+		// Inline Rosenberg-Klatt turbulence state (phase-synced with glottal burst detection)
+		double turbGlotPhase = 0.0;
+		double turbTiltPrev  = 0.0;
+		double turbT         = 1.0 / f0;
+		double turbTe        = 0.6 * turbT;
+
 		BurstNoise glotBurst;
 		BandPass glotBurstBP;
 		glotBurstBP.Setup(600.0, 1200.0, mSampleRate);
-		TurbulenceNoise turbulence;
+
 		for (size_t i = 0; i < N; i++)
 		{
 			double t = static_cast<double>(i) / mSampleRate;
 
-			double noise = turbulence.Sample(t, hpFilt, fpFilt, nl, vr, f0, mSampleRate);
+			// Rosenberg-Klatt glottal area gating (inline, phase-synced with burst detection)
+			turbGlotPhase += 1.0 / mSampleRate;
+			if (turbGlotPhase >= turbT) turbGlotPhase -= turbT;
+			double Ug     = (turbGlotPhase < turbTe) ? sin(PI * turbGlotPhase / turbTe) : 0.0;
+			double gating = (vr < 0.01) ? 1.0 : sqrt(max(0.0, Ug));
 
-			// Voiced fricatives use both generators: Rosenberg-Klatt turbulence (above)
-			// plus a Klatt burst at each glottal closure for the periodic aspiration spike
+			// Pre-emphasized white noise → HP → front-cavity BP with turbulence flutter
+			double n       = WhiteNoise();
+			double src     = n - 0.95 * turbTiltPrev;
+			turbTiltPrev   = n;
+			double flutter = 1.0 + 0.08 * sin(TAU * 6.7 * t) * sin(TAU * 2.9 * t);
+			double noise   = fpFilt.Process(hpFilt.Process(src)) * nl * gating * flutter;
+
+			// Voiced fricatives: Klatt glottal burst at closure instant (phase-synced)
 			if (vr > 0.0)
 			{
-				double period        = 1.0 / f0;
-				double phaseInPeriod = fmod(t, period);
-				double te            = 0.6 * period;
-				double burstWin      = 0.1 * period;
-				if (phaseInPeriod >= te && phaseInPeriod < te + burstWin)
+				double burstWin = 0.1 * turbT;
+				if (turbGlotPhase >= turbTe && turbGlotPhase < turbTe + burstWin)
 				{
-					double burstEnv = (phaseInPeriod - te) / burstWin;
+					double burstEnv = (turbGlotPhase - turbTe) / burstWin;
 					noise += glotBurst.Sample(burstEnv, glotBurstBP, nl * vr * 0.25);
 				}
 			}
 
+			// Voiced component: LP-filtered glottal source
+			double g = GlottalSource(t, f0);
+			g = SpectralTilt(g);
+			double voiced = (vr > 0.0) ? lpGlottal.Process(g) * vr * 0.35 : 0.0;
+			double carry  = mF1.Process(mF2.Process(mF3.Process(mF4.Process(mF5.Process(g))))) * 0.06;
+
+			raw[i] = (noise + voiced + carry) * ConsonantEnvelope(t, dur);
 			// Voiced component: LP-filtered glottal source (unconditional for phase continuity)
 			double g = GlottalSource(t, f0);
 			g = SpectralTilt(g);
@@ -721,6 +768,9 @@ private:
 		// Front-cavity BPF: sculpts the sibilant spectral peak (place-dependent NF/NBW)
 		BandPass fpFilt;
 		fpFilt.Setup(nf, nbw, mSampleRate);
+		// Second-stage BPF: narrows the peak for crisper sibilant character
+		BandPass fpFilt2;
+		fpFilt2.Setup(nf, nbw * 0.55, mSampleRate);
 
 		// LP-filtered glottal leakage for voiced sibilants (/z/, /ʒ/)
 		BandPass lpGlottal;
@@ -738,8 +788,9 @@ private:
 			double src = n - 0.97 * tiltPrev;
 			tiltPrev   = n;
 
-			// HP removes low-frequency rumble; BPF sculpts the sibilant peak
-			double noise = fpFilt.Process(hpFilt.Process(src)) * nl;
+			// HP → BP1 → BP2: spectral trough + coarse peak + narrowed sibilant peak
+			double flutter = 1.0 + 0.06 * sin(TAU * 8.1 * t) * sin(TAU * 3.7 * t);
+			double noise   = fpFilt2.Process(fpFilt.Process(hpFilt.Process(src))) * nl * flutter;
 
 			// Voiced component: LP-filtered glottal source (unconditional for phase continuity)
 			double g = GlottalSource(t, f0);
@@ -837,8 +888,8 @@ private:
 		double bw4  = ph.GetBandwidth4() > 0.0 ? ph.GetBandwidth4() : 240.0;
 		double f5t  = ph.GetFormant5()   > 0.0 ? ph.GetFormant5()   : 4200.0;
 		double bw5  = ph.GetBandwidth5() > 0.0 ? ph.GetBandwidth5() : 350.0;
-
-		// Neutral (schwa-like) onset: all formants displaced toward central vowel values.
+		bw2 *= 1.15;
+		bw3 *= 1.25;
 		// F4/F5 are held at their target throughout — only F1/F2/F3 glide.
 		const double f1o = 500.0;   // neutral F1 onset
 		const double f2o = 1500.0;  // neutral F2 onset (schwa)
@@ -872,7 +923,7 @@ private:
 			s *= ampScale * ConsonantEnvelope(t, dur);
 			raw[i] = s;
 		}
-		return NormaliseAndConvert(raw, 0.15);
+		return NormaliseAndConvert(raw, 0.18);
 	}
 
 	// Flap
@@ -960,6 +1011,8 @@ private:
 		SetupFormants(ph, !mInWord);
 		if (!mInWord) { mGlottalPhase = 0.0; mTiltState = 0.0; mShimmer = 1.0; mLastPhase = 0.0; }
 		double pitchHz = mCurrentF0;
+		AntiFormant latZero;
+		latZero.Setup(1800.0, 900.0, mSampleRate);
 
 		for (size_t i = 0; i < N; i++)
 		{
@@ -967,12 +1020,13 @@ private:
 			double s = GlottalSource(t, pitchHz) * ph.GetVoicingRatio();
 			s = SpectralTilt(s);
 			ApplyFormants(s, ph);
+			s = latZero.Process(s);
 			if (hasFrication)
 				s += bp.Process(WhiteNoise()) * ph.GetNoiseLevel();
 			s *= ConsonantEnvelope(t, dur);
 			raw[i] = s;
 		}
-		return NormaliseAndConvert(raw, 0.15);
+		return NormaliseAndConvert(raw, 0.18);
 	}
 
 	std::vector<short> GenerateConsonant(const Phoneme& ph, double dur)
@@ -1011,6 +1065,7 @@ private:
 	mutable double mLastPhase    = 0.0;
 	mutable double mJitter2      = 1.0;
 	mutable double mOQJitter     = 0.60;
+	mutable double mTiltCoeff    = 0.88;
 	mutable double mTiltCoeff    = 0.20;
 	mutable bool   mInWord       = false;
 	bool mSuppressAttack  = false;
@@ -1160,6 +1215,8 @@ private:
 
 	double SpectralTilt(double sample) const
 	{
+		mTiltState = mTiltCoeff * mTiltState + (1.0 - mTiltCoeff) * sample;
+		return mTiltState;
 		mTiltState = sample + mTiltCoeff * mTiltState; // Update the tilt state based on the current sample and the previous state to create a low-pass filter effect that simulates spectral tilt
 		return mTiltState; // Return the current value of the tilt state as the output of the spectral tilt filter
 	}

@@ -6,11 +6,13 @@
 #include "Voice/VoiceOutputEngine.h"
 #include "BeepSynth.h"
 #include "Voice/Language/LanguageDictionary.h"
+#include "Voice/Language/ProsodyDictionary.h"
 #include "Voice/Vocalics/PhonemeSynth.h"
 #include "Voice/Vocalics/FootParser.h"
 #include "Voice/Vocalics/PitchAccentModel.h"
 
 class AdjutantEngine;
+class LanguageCortex;
 
 class SpeechEngine
 {
@@ -35,12 +37,15 @@ public:
 	double SpeakLine(const std::string& text, VoiceOutputEngine& vo);
 	double PlayBeep(BeepType type, VoiceOutputEngine& vo);
 
+	void SetLanguageCortex(LanguageCortex* cortex) { mLangCortex = cortex; }
+
 private:
 	std::vector<std::string> queue; // Queue to hold lines of dialogue
 	std::vector<int16_t> pcmQueue; // Queue to hold PCM audio data (if needed)
 	VoiceOutputEngine voiceOutput; // Voice output engine to speak lines
 
 	LanguageDictionary mDict;
+	ProsodyDictionary  mProsodyDict;
 	PhonemeSynth       mSynth;
 	SyllableBuilder    mSyllableBuilder;
 	FootParser         mFootParser;
@@ -48,6 +53,7 @@ private:
 	IntonationModel    mIntonationModel;
 	PitchAccentModel   mPitchAccentModel;
 	bool               mLanguageLoaded = false;
+	LanguageCortex*    mLangCortex     = nullptr;
 };
 
 #endif // SPEECH_ENGINE_H

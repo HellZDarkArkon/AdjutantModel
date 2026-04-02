@@ -21,6 +21,11 @@ struct ProsodicWord
 	std::vector<ProsodicFoot> feet;
 	int primaryFootIndex = 0; // index into feet[] whose head is PRIMARY
 
+	// When non-empty and size == TotalSyllables(), these stress levels override
+	// the foot-structure-derived values in FlatSyllables() and MoraicGrid.
+	// Set by SpeechEngine after a ProsodyDictionary hit; cleared per phrase.
+	std::vector<StressLevel> stressOverride;
+
 	// -----------------------------------------------------------------------
 	// Stress query
 	// -----------------------------------------------------------------------
@@ -42,15 +47,27 @@ struct ProsodicWord
 	// -----------------------------------------------------------------------
 
 	// Returns every (Syllable, StressLevel) pair in linear phonological order.
+	// When stressOverride is populated and its size matches TotalSyllables(),
+	// those values are used instead of the foot-structure-derived levels.
 	std::vector<std::pair<Syllable, StressLevel>> FlatSyllables() const
 	{
 		std::vector<std::pair<Syllable, StressLevel>> result;
 		result.reserve(TotalSyllables());
+
+		const bool useOverride = !stressOverride.empty()
+							  && (int)stressOverride.size() == TotalSyllables();
+		int overrideIdx = 0;
+
 		for (int fi = 0; fi < (int)feet.size(); ++fi)
 		{
 			const ProsodicFoot& foot = feet[fi];
 			for (int si = 0; si < foot.Size(); ++si)
-				result.emplace_back(foot.syllables[si], GetSyllableStress(fi, si));
+			{
+				StressLevel sl = useOverride
+							   ? stressOverride[overrideIdx++]
+							   : GetSyllableStress(fi, si);
+				result.emplace_back(foot.syllables[si], sl);
+			}
 		}
 		return result;
 	}

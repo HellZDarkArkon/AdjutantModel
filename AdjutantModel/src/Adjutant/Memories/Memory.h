@@ -18,9 +18,12 @@ public:
 	// Write the current in-memory entry list out to a .mem file.
 	void SaveFile(const std::string& filePath) const;
 
+	// Add a fully-constructed entry directly (used by the LTM promotion path in AdjutantEngine).
+	void AddEntry(const MemoryEntry& e);
+
 	// Read the current GPU CoreMindState (binding 0) and append a new entry.
 	void CaptureFromGPU(GLuint stateBuffer, const std::string& user,
-	                    const std::string& date, const std::string& time);
+						const std::string& date, const std::string& time);
 
 	// Write the entry at the given index back into the GPU CoreMindState (binding 0).
 	void InjectToGPU(int index, GLuint stateBuffer) const;

@@ -1,0 +1,950 @@
+#lang en_US
+
+# en_US.prosody — per-word stress pattern and pitch accent override dictionary
+#
+# PURPOSE
+#   Allows explicit lexical stress patterns and pitch accent assignments to be
+#   associated with individual words, overriding the algorithmic outputs of
+#   FootParser (stress placement) and PitchAccentModel (accent assignment).
+#   Useful for:
+#     - Function words that are always unstressed/deaccented in connected speech
+#     - Words with irregular lexical stress FootParser cannot derive correctly
+#     - Contextual prosodic highlighting (emphasis, contrastive stress, register)
+#
+# -----------------------------------------------------------------------
+# FORMAT  (word_prosody section)
+# -----------------------------------------------------------------------
+#
+#   word - S1 - S2 - ... - ACCENT
+#
+#   Token delimiter  :  ' - '  (space-hyphen-space)
+#   Left token       :  lowercase word (matched case-insensitively)
+#   Si tokens        :  one per syllable, left-to-right
+#                         P = PRIMARY    → StressLevel::PRIMARY
+#                         S = SECONDARY  → StressLevel::SECONDARY
+#                         U = UNSTRESSED → StressLevel::UNSTRESSED
+#   Final ACCENT token: pitch accent applied to the PRIMARY syllable
+#                         H_STAR        → PitchAccentType::H_STAR
+#                                         High peak; declarative medial default
+#                         L_STAR        → PitchAccentType::L_STAR
+#                                         Low valley; deaccented/secondary material
+#                         L_PLUS_H_STAR → PitchAccentType::L_PLUS_H_STAR
+#                                         Rising accent; phrase-initial, interrogative
+#                         H_PLUS_L_STAR → PitchAccentType::H_PLUS_L_STAR
+#                                         Falling-peak; phrase-final declarative
+#                         DOWNSTEP_H    → PitchAccentType::DOWNSTEP_H
+#                                         Downstepped high; follows prior H* in phrase
+#                         NONE          → PitchAccentType::NONE
+#                                         No pitch accent; unstressed function words
+#                         AUTO          → Delegate to PitchAccentModel
+#                                         Uses phrase-position + boundary-type rules:
+#                                           tPhrase < 0.15             → L_PLUS_H_STAR
+#                                           tPhrase ≥ 0.80, DECLARATIVE → H_PLUS_L_STAR
+#                                           tPhrase ≥ 0.80, INTERROGATIVE → L_PLUS_H_STAR
+#                                           preceded by H_STAR/DOWNSTEP_H → DOWNSTEP_H
+#                                           otherwise                  → H_STAR
+#
+# CONTEXT-SENSITIVE VARIANTS  (phrase boundary type overrides)
+#
+#   word[DECLARATIVE]   - S1 - ... - ACCENT
+#   word[INTERROGATIVE] - S1 - ... - ACCENT
+#   word[CONTINUATION]  - S1 - ... - ACCENT
+#   word[EXCLAMATORY]   - S1 - ... - ACCENT
+#
+#   Append a PhraseType label in square brackets to the word token.
+#   Context variants are matched first; the plain entry is the fallback.
+#   PhraseType is determined by the terminal punctuation of the phrase that
+#   contains the word (see PhraseContour.h: PhraseType enum).
+#
+# SYLLABLE COUNT VALIDATION
+#   The number of Si tokens must match the syllable count produced by
+#   SyllableBuilder for the phoneme sequence in en_US.dict.  Mismatches
+#   are silently ignored (entry treated as absent) and a debug warning
+#   should be emitted when support for this file is implemented.
+#
+# -----------------------------------------------------------------------
+# PIPELINE INTERACTION
+# -----------------------------------------------------------------------
+#
+#   1. FootParser::Parse() → ProsodicWord  (algorithmic stress)
+#      ↓ OVERRIDE: replace each syllable's StressLevel with Si from this file
+#
+#   2. PhraseContour::Multiplier() → phrase-level F0 base  (unchanged)
+#
+#   3. PitchAccentModel::Apply()   → per-syllable accent coarticulation
+#      ↓ OVERRIDE: if ACCENT ≠ AUTO, inject the specified PitchAccentType
+#                  directly into the primary syllable before coarticulation
+#                  propagates to neighbouring accented syllables
+#
+#   4. IntonationModel::Compute()  → per-phoneme F0/amp/dur params  (unchanged)
+#      Note: overriding stress level here also changes F0/amp/dur scales
+#      via primaryF0Scale / secondaryF0Scale / unstressedF0Scale.
+#
+# -----------------------------------------------------------------------
+# MODIFICATION GUIDE  (for "in solitude" prosodic shaping)
+# -----------------------------------------------------------------------
+#
+#  To make "solitude" sound more meditative / receding:
+#    Lower the primary F0 scale in IntonationModel params, or change
+#    the declarative accent to H_PLUS_L_STAR here — the falling peak
+#    drops pitch sharply after the stressed "sol", giving a sense of
+#    resignation or quiet.
+#
+#  To make "solitude" sound upward-reaching / hopeful:
+#    Change accent to L_PLUS_H_STAR — pitch rises INTO the stressed
+#    syllable rather than falling from it, giving a searching quality.
+#
+#  To neutralise "solitude" (robotic, flat):
+#    Change accent to L_STAR and all stress tokens to U — PitchAccentModel
+#    assigns NONE, IntonationModel uses unstressedF0Scale throughout.
+#
+#  To make "in" carry contrastive stress ("in solitude, not together"):
+#    Change the "in" entry to: in - P - H_STAR
+#    FootParser will have already assigned a trochaic foot; this overrides
+#    the stress level so IntonationModel lifts its F0/amp.
+#
+# -----------------------------------------------------------------------
+#word_prosody
+
+# -----------------------------------------------------------------
+# "in solitude" — the target phrase
+# -----------------------------------------------------------------
+
+# "in"  /ɪn/  — 1 syllable
+#   Preposition; fully unstressed in connected speech.
+#   Receives no pitch accent and is metrically invisible to the phrase contour.
+#   IntonationModel will apply unstressedF0Scale (0.88 × baseF0 ≈ 194 Hz).
+in - U - NONE
+
+# "solitude"  /ˈsɒl.ɪ.tuːd/  — 3 syllables: sol · i · tude
+#   Phoneme sequence (en_US.dict): S - AA - L - IH - T - UW - D
+#   Syllable 1  "sol"   → PRIMARY   (head of foot 1, trochee head)
+#   Syllable 2  "i"     → UNSTRESSED (foot 1 weak position; reduced /ɪ/)
+#   Syllable 3  "tude"  → SECONDARY  (head of degenerate foot 2; /tuːd/)
+#
+#   AUTO delegates to PitchAccentModel which will choose:
+#     phrase-initial  → L_PLUS_H_STAR on "sol"  (rising onset)
+#     phrase-medial   → H_STAR on "sol"          (high peak)
+#     phrase-final declarative → H_PLUS_L_STAR   (falling peak, closed cadence)
+#     phrase-final interrogative → L_PLUS_H_STAR  (open cadence)
+solitude - P - U - S - AUTO
+
+# Explicit phrase-type overrides for "solitude".
+# Uncomment and edit to lock the accent regardless of phrase position.
+
+# Declarative (sentence ends with '.' or ';'):
+#   H_STAR — steady high peak on "sol"; good for mid-sentence occurrence.
+#   H_PLUS_L_STAR — falling peak; use when "solitude" closes the sentence.
+#   Change this line to select the accent quality you prefer:
+solitude[DECLARATIVE]   - P - U - S - H_PLUS_L_STAR
+
+# Interrogative (sentence ends with '?'):
+#   Rising accent on "sol" keeps the phrase sounding open / questioning.
+solitude[INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+
+# Continuation (phrase ends with ',' or ':'):
+#   Mild rise sustains forward motion without closing the utterance.
+solitude[CONTINUATION]  - P - U - S - L_PLUS_H_STAR
+
+# Exclamatory (sentence ends with '!'):
+#   High peak with full amplitude — "sol" is loud and prominent.
+solitude[EXCLAMATORY]   - P - U - S - H_STAR
+
+# -----------------------------------------------------------------
+# "adjutant"  /ˈæd.dʒʊ.t(ə)nt/  — 3 syllables: adj · u · tant
+# -----------------------------------------------------------------
+# Phoneme sequence (en_US.dict): AE - D - JH - UW - T - AH - N - T
+#   Syllable 1  "adj"  → PRIMARY    (trochee head; stressed /æd/)
+#   Syllable 2  "u"    → UNSTRESSED (trochee weak; reduced /dʒʊ/)
+#   Syllable 3  "tant" → SECONDARY  (degenerate foot; unreduced /t(ə)nt/)
+#
+# FootParser (LEFTMOST trochee) may assign this as P-U-U; override to P-U-S
+# so the final syllable carries the light rhythmic lift it has in natural speech.
+adjutant             - P - U - S - AUTO
+adjutant[DECLARATIVE]   - P - U - S - H_PLUS_L_STAR
+adjutant[INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+adjutant[CONTINUATION]  - P - U - S - L_PLUS_H_STAR
+adjutant[EXCLAMATORY]   - P - U - S - H_STAR
+
+# -----------------------------------------------------------------
+# "initiate"  /ɪˈnɪʃ.i.eɪt/  — 4 syllables: i · ni · ti · ate
+# -----------------------------------------------------------------
+# Phoneme sequence (en_US.dict):
+#   VERB: IH - N - IH - SH - IY - EY IH - T  (final /eɪt/ = full diphthong)
+#   NOUN: IH - N - IH - SH - IY - IH  - T    (final /ɪt/  = reduced)
+#   Syllable 1  "i"   → UNSTRESSED (pre-tonic; reduced /ɪ/)
+#   Syllable 2  "ni"  → PRIMARY    (trochee head; stressed /nɪ/)
+#   Syllable 3  "ti"  → UNSTRESSED (trochee weak; reduced /ʃi/)
+#   Syllable 4  "ate" → SECONDARY  (degenerate foot; verb /eɪt/, noun /ɪt/)
+#
+# LEFTMOST trochee starting from syllable 1 would give P-U-P-U; override to
+# U-P-U-S to reflect the iambic onset + secondary on the inflected ending.
+initiate             - U - P - U - S - AUTO
+initiate[DECLARATIVE]   - U - P - U - S - H_PLUS_L_STAR
+initiate[INTERROGATIVE] - U - P - U - S - L_PLUS_H_STAR
+initiate[CONTINUATION]  - U - P - U - S - L_PLUS_H_STAR
+initiate[EXCLAMATORY]   - U - P - U - S - H_STAR
+
+
+# "kernel"  /ˈkɜːr.nəl/  — 2 syllables: ker · nel
+# Phoneme sequence (en_US.dict): K - ER - N - AH - L
+kernel - P - U - AUTO
+kernel [DECLARATIVE] - P - U - H_PLUS_L_STAR
+kernel [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+kernel [CONTINUATION] - P - U - L_PLUS_H_STAR
+kernel [EXCLAMATORY] - P - U - H_STAR
+
+# "any" /ˈɛ.ni/  — 2 syllables: an · y
+any - P - U - AUTO
+any [DECLARATIVE] - P - U - H_PLUS_L_STAR
+any [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+any [CONTINUATION] - P - U - L_PLUS_H_STAR
+any [EXCLAMATORY] - P - U - H_STAR
+
+seven - P - U - AUTO
+seven [DECLARATIVE] - P - U - H_PLUS_L_STAR
+seven [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+seven [CONTINUATION] - P - U - L_PLUS_H_STAR
+seven [EXCLAMATORY] - P - U - H_STAR
+
+zero - P - U - AUTO
+zero [DECLARATIVE] - P - U - H_PLUS_L_STAR
+zero [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+zero [CONTINUATION] - P - U - L_PLUS_H_STAR
+zero [EXCLAMATORY] - P - U - H_STAR
+
+7 - P - U - AUTO
+7 [DECLARATIVE] - P - U - H_PLUS_L_STAR
+7 [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+7 [CONTINUATION] - P - U - L_PLUS_H_STAR
+7 [EXCLAMATORY] - P - U - H_STAR
+
+0 - P - U - AUTO
+0 [DECLARATIVE] - P - U - H_PLUS_L_STAR
+0 [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+0 [CONTINUATION] - P - U - L_PLUS_H_STAR
+0 [EXCLAMATORY] - P - U - H_STAR
+
+person - P - U - AUTO
+person [DECLARATIVE] - P - U - H_PLUS_L_STAR
+person [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+person [CONTINUATION] - P - U - L_PLUS_H_STAR
+person [EXCLAMATORY] - P - U - H_STAR
+
+people - P - U - AUTO
+people [DECLARATIVE] - P - U - H_PLUS_L_STAR
+people [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+people [CONTINUATION] - P - U - L_PLUS_H_STAR
+people [EXCLAMATORY] - P - U - H_STAR
+
+woman - P - U - AUTO
+woman [DECLARATIVE] - P - U - H_PLUS
+woman [INTERROGATIVE] - P - U - L_PLUS
+woman [CONTINUATION] - P - U - L_PLUS
+woman [EXCLAMATORY] - P - U - H_STAR
+
+water - P - U - AUTO
+water [DECLARATIVE] - P - U - H_PLUS_L_STAR
+water [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+water [CONTINUATION] - P - U - L_PLUS_H_STAR
+water [EXCLAMATORY] - P - U - H_STAR
+
+city - P - U - AUTO
+city [DECLARATIVE] - P - U - H_PLUS_L_STAR
+city [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+city [CONTINUATION] - P - U - L_PLUS_H_STAR
+city [EXCLAMATORY] - P - U - H_STAR
+
+money - P - U - AUTO
+money [DECLARATIVE] - P - U - H_PLUS_L_STAR
+money [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+money [CONTINUATION] - P - U - L_PLUS_H_STAR
+money [EXCLAMATORY] - P - U - H_STAR
+
+number - P - U - AUTO
+number [DECLARATIVE] - P - U - H_PLUS_L_STAR
+number [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+number [CONTINUATION] - P - U - L_PLUS_H_STAR
+number [EXCLAMATORY] - P - U - H_STAR
+
+story - P - U - AUTO
+story [DECLARATIVE] - P - U - H_PLUS_L_STAR
+story [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+story [CONTINUATION] - P - U - L_PLUS_H_STAR
+story [EXCLAMATORY] - P - U - H_STAR
+
+table - P - U - AUTO
+table [DECLARATIVE] - P - U - H_PLUS_L_STAR
+table [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+table [CONTINUATION] - P - U - L_PLUS_H_STAR
+table [EXCLAMATORY] - P - U - H_STAR
+
+power - P - U - AUTO
+power [DECLARATIVE] - P - U - H_PLUS_L_STAR
+power [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+power [CONTINUATION] - P - U - L_PLUS_H_STAR
+power [EXCLAMATORY] - P - U - H_STAR
+
+minute - U - P - AUTO
+minute [DECLARATIVE] - U - P - H_PLUS_L_STAR
+minute [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+minute [CONTINUATION] - U - P - L_PLUS_H_STAR
+minute [EXCLAMATORY] - U - P - H_STAR
+minute [ADJECTIVE] - P - U - AUTO
+
+begin - P - U - AUTO
+begin [DECLARATIVE] - P - U - H_PLUS_L_STAR
+begin [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+begin [CONTINUATION] - P - U - L_PLUS_H_STAR
+begin [EXCLAMATORY] - P - U - H_STAR
+
+end - P - U - AUTO
+end [DECLARATIVE] - P - U - H_PLUS_L_STAR
+end [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+end [CONTINUATION] - P - U - L_PLUS_H_STAR
+end [EXCLAMATORY] - P - U - H_STAR
+
+believe - P - U - AUTO
+believe [DECLARATIVE] - P - U - H_PLUS_L_STAR
+believe [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+believe [CONTINUATION] - P - U - L_PLUS_H_STAR
+believe [EXCLAMATORY] - P - U - H_STAR
+
+happen - P - U - AUTO
+happen [DECLARATIVE] - P - U - H_PLUS_L_STAR
+happen [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+happen [CONTINUATION] - P - U - L_PLUS_H_STAR
+happen [EXCLAMATORY] - P - U - H_STAR
+
+provide - P - U - AUTO
+provide [DECLARATIVE] - P - U - H_PLUS_L_STAR
+provide [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+provide [CONTINUATION] - P - U - L_PLUS_H_STAR
+provide [EXCLAMATORY] - P - U - H_STAR
+
+include - P - U - AUTO
+include [DECLARATIVE] - P - U - H_PLUS_L_STAR
+include [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+include [CONTINUATION] - P - U - L_PLUS_H_STAR
+include [EXCLAMATORY] - P - U - H_STAR
+
+continue - P - U - AUTO
+continue [DECLARATIVE] - P - U - H_PLUS_L_STAR
+continue [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+continue [CONTINUATION] - P - U - L_PLUS_H_STAR
+continue [EXCLAMATORY] - P - U - H_STAR
+
+understand - P - U - S - AUTO
+understand [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+understand [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+understand [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+understand [EXCLAMATORY] - P - U - S - H_STAR
+
+follow - P - U - AUTO
+follow [DECLARATIVE] - P - U - H_PLUS_L_STAR
+follow [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+follow [CONTINUATION] - P - U - L_PLUS_H_STAR
+follow [EXCLAMATORY] - P - U - H_STAR
+
+create - P - U - AUTO
+create [DECLARATIVE] - P - U - H_PLUS_L_STAR
+create [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+create [CONTINUATION] - P - U - L_PLUS_H_STAR
+create [EXCLAMATORY] - P - U - H_STAR
+
+offer - P - U - AUTO
+offer [DECLARATIVE] - P - U - H_PLUS_L_STAR
+offer [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+offer [CONTINUATION] - P - U - L_PLUS_H_STAR
+offer [EXCLAMATORY] - P - U - H_STAR
+
+remember - P - U - S - AUTO
+remember [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+remember [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+remember [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+remember [EXCLAMATORY] - P - U - S - H_STAR
+
+consider - P - U - S - AUTO
+consider [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+consider [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+consider [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+consider [EXCLAMATORY] - P - U - S - H_STAR
+
+appear - P - U - AUTO
+appear [DECLARATIVE] - P - U - H_PLUS_L_STAR
+appear [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+appear [CONTINUATION] - P - U - L_PLUS_H_STAR
+appear [EXCLAMATORY] - P - U - H_STAR
+
+little - P - U - AUTO
+little [DECLARATIVE] - P - U - H_PLUS_L_STAR
+little [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+little [CONTINUATION] - P - U - L_PLUS_H_STAR
+little [EXCLAMATORY] - P - U - H_STAR
+
+other - P - U - AUTO
+other [DECLARATIVE] - P - U - H_PLUS_L_STAR
+other [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+other [CONTINUATION] - P - U - L_PLUS_H_STAR
+other [EXCLAMATORY] - P - U - H_STAR
+
+different - P - U - S - AUTO
+different [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+different [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+different [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+different [EXCLAMATORY] - P - U - S - H_STAR
+
+
+early - P - U - AUTO
+early [DECLARATIVE] - P - U - H_PLUS_L_STAR
+early [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+early [CONTINUATION] - P - U - L_PLUS_H_STAR
+early [EXCLAMATORY] - P - U - H_STAR
+
+important - P - U - S - AUTO
+important [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+important [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+important [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+important [EXCLAMATORY] - P - U - S - H_STAR
+
+public - P - U - AUTO
+public [DECLARATIVE] - P - U - H_PLUS_L_STAR
+public [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+public [CONTINUATION] - P - U - L_PLUS_H_STAR
+public [EXCLAMATORY] - P - U - H_STAR
+
+possible - P - S - U - AUTO
+possible [DECLARATIVE] - P - S - U - H_PLUS_L_STAR
+possible [INTERROGATIVE] - P - S - U - L_PLUS_H_STAR
+possible [CONTINUATION] - P - S - U - L_PLUS_H_STAR
+possible [EXCLAMATORY] - P - S - U - H_STAR
+
+eleven - U - P - S - AUTO
+eleven [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+eleven [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+eleven [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+eleven [EXCLAMATORY] - U - P - S - H_STAR
+
+hundred - P - U - AUTO
+hundred [DECLARATIVE] - P - U - H_PLUS_L_STAR
+hundred [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+hundred [CONTINUATION] - P - U - L_PLUS_H_STAR
+hundred [EXCLAMATORY] - P - U - H_STAR
+
+thousand - P - U - AUTO
+thousand [DECLARATIVE] - P - U - H_PLUS_L_STAR
+thousand [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+thousand [CONTINUATION] - P - U - L_PLUS_H_STAR
+thousand [EXCLAMATORY] - P - U - H_STAR
+
+million - P - S - U - AUTO
+million [DECLARATIVE] - P - S - U - H_PLUS_L_STAR
+million [INTERROGATIVE] - P - S - U - L_PLUS_H_STAR
+million [CONTINUATION] - P - S - U - L_PLUS_H_STAR
+million [EXCLAMATORY] - P - S - U - H_STAR
+
+monday - P - U - AUTO
+monday [DECLARATIVE] - P - U - H_PLUS_L_STAR
+monday [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+monday [CONTINUATION] - P - U - L_PLUS_H_STAR
+monday [EXCLAMATORY] - P - U - H_STAR
+
+tuesday - P - U - AUTO
+tuesday [DECLARATIVE] - P - U - H_PLUS_L_STAR
+tuesday [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+tuesday [CONTINUATION] - P - U - L_PLUS_H_STAR
+tuesday [EXCLAMATORY] - P - U - H_STAR
+
+wednesday - P - U - AUTO
+wednesday [DECLARATIVE] - P - U - H_PLUS_L_STAR
+wednesday [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+wednesday [CONTINUATION] - P - U - L_PLUS_H_STAR
+wednesday [EXCLAMATORY] - P - U - H_STAR
+
+thursday - P - U - AUTO
+thursday [DECLARATIVE] - P - U - H_PLUS_L_STAR
+thursday [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+thursday [CONTINUATION] - P - U - L_PLUS_H_STAR
+thursday [EXCLAMATORY] - P - U - H_STAR
+
+friday - P - U - AUTO
+friday [DECLARATIVE] - P - U - H_PLUS_L_STAR
+friday [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+friday [CONTINUATION] - P - U - L_PLUS_H_STAR
+friday [EXCLAMATORY] - P - U - H_STAR
+
+saturday - P - U - S - AUTO
+saturday [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+saturday [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+saturday [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+saturday [EXCLAMATORY] - P - U - S - H_STAR
+
+sunday - P - U - AUTO
+sunday [DECLARATIVE] - P - U - H_PLUS_L_STAR
+sunday [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+sunday [CONTINUATION] - P - U - L_PLUS_H_STAR
+sunday [EXCLAMATORY] - P - U - H_STAR
+
+january - P - U - S - U - AUTO
+january [DECLARATIVE] - P - U - S - U - H_PLUS_L_STAR
+january [INTERROGATIVE] - P - U - S - U - L_PLUS_H_STAR
+january [CONTINUATION] - P - U - S - U - L_PLUS_H_STAR
+january [EXCLAMATORY] - P - U - S - U - H_STAR
+
+february - P - U - S - U - AUTO
+february [DECLARATIVE] - P - U - S - U - H_PLUS_L_STAR
+february [INTERROGATIVE] - P - U - S - U - L_PLUS_H_STAR
+february [CONTINUATION] - P - U - S - U - L_PLUS_H_STAR
+february [EXCLAMATORY] - P - U - S - U - H_STAR
+
+april - P - U - AUTO
+april [DECLARATIVE] - P - U - H_PLUS_L_STAR
+april [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+april [CONTINUATION] - P - U - L_PLUS_H_STAR
+april [EXCLAMATORY] - P - U - H_STAR
+
+july - U - P - AUTO
+july [DECLARATIVE] - U - P - H_PLUS_L_STAR
+july [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+july [CONTINUATION] - U - P - L_PLUS_H_STAR
+july [EXCLAMATORY] - U - P - H_STAR
+
+august - P - U - AUTO
+august [DECLARATIVE] - P - U - H_PLUS_L_STAR
+august [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+august [CONTINUATION] - P - U - L_PLUS_H_STAR
+august [EXCLAMATORY] - P - U - H_STAR
+
+september - U - P - S - AUTO
+september [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+september [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+september [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+september [EXCLAMATORY] - U - P - S - H_STAR
+
+october - U - P - S - AUTO
+october [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+october [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+october [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+october [EXCLAMATORY] - U - P - S - H_STAR
+
+november - U - P - S - AUTO
+november [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+november [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+november [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+november [EXCLAMATORY] - U - P - S - H_STAR
+
+december - U - P - S - AUTO
+december [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+december [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+december [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+december [EXCLAMATORY] - U - P - S - H_STAR
+
+hello - P - S - AUTO
+hello [DECLARATIVE] - P - U - H_PLUS_L_STAR
+hello [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+hello [CONTINUATION] - P - S - L_PLUS_H_STAR
+hello [EXCLAMATORY] - P - S - H_STAR
+
+goodbye - U - P - AUTO
+goodbye [DECLARATIVE] - U - P - H_PLUS_L_STAR
+goodbye [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+goodbye [CONTINUATION] - U - P - L_PLUS_H_STAR
+goodbye [EXCLAMATORY] - U - P - H_STAR
+
+sorry - P - U - AUTO
+sorry [DECLARATIVE] - P - U - H_PLUS_L_STAR
+sorry [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+sorry [CONTINUATION] - P - U - L_PLUS_H_STAR
+sorry [EXCLAMATORY] - P - U - H_STAR
+
+okay - P - U - AUTO
+okay [DECLARATIVE] - P - U - H_PLUS_L_STAR
+okay [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+okay [CONTINUATION] - P - U - L_PLUS_H_STAR
+okay [EXCLAMATORY] - P - U - H_STAR
+
+very - P - U - AUTO
+very [DECLARATIVE] - P - U - H_PLUS_L_STAR
+very [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+very [CONTINUATION] - P - U - L_PLUS_H_STAR
+very [EXCLAMATORY] - P - U - H_STAR
+
+also - P - U - AUTO
+also [DECLARATIVE] - P - U - H_PLUS_L_STAR
+also [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+also [CONTINUATION] - P - U - L_PLUS_H_STAR
+also [EXCLAMATORY] - P - U - H_STAR
+
+never - U - P - AUTO
+never [DECLARATIVE] - U - P - H_PLUS_L_STAR
+never [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+never [CONTINUATION] - U - P - L_PLUS_H_STAR
+never [EXCLAMATORY] - U - P - H_STAR
+
+always - P - U - AUTO
+always [DECLARATIVE] - P - U - H_PLUS_L_STAR
+always [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+always [CONTINUATION] - P - U - L_PLUS_H_STAR
+always [EXCLAMATORY] - P - U - H_STAR
+
+often - U - P - AUTO
+often [DECLARATIVE] - U - P - H_PLUS_L_STAR
+often [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+often [CONTINUATION] - U - P - L_PLUS_H_STAR
+often [EXCLAMATORY] - U - P - H_STAR
+
+again - U - P - AUTO
+again [DECLARATIVE] - U - P - H_PLUS_L_STAR
+again [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+again [CONTINUATION] - U - P - L_PLUS_H_STAR
+again [EXCLAMATORY] - U - P - H_STAR
+
+away - U - P - AUTO
+away [DECLARATIVE] - U - P - H_PLUS_L_STAR
+away [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+away [CONTINUATION] - U - P - L_PLUS_H_STAR
+away [EXCLAMATORY] - U - P - H_STAR
+
+around - U - P - AUTO
+around [DECLARATIVE] - U - P - H_PLUS_L_STAR
+around [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+around [CONTINUATION] - U - P - L_PLUS_H_STAR
+around [EXCLAMATORY] - U - P - H_STAR
+
+because - U - P - AUTO
+because [DECLARATIVE] - U - P - H_PLUS_L_STAR
+because [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+because [CONTINUATION] - U - P - L_PLUS_H_STAR
+because [EXCLAMATORY] - U - P - H_STAR
+
+before - U - P - AUTO
+before [DECLARATIVE] - U - P - H_PLUS_L_STAR
+before [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+before [CONTINUATION] - U - P - L_PLUS_H_STAR
+before [EXCLAMATORY] - U - P - H_STAR
+
+after - P - U - AUTO
+after [DECLARATIVE] - P - U - H_PLUS_L_STAR
+after [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+after [CONTINUATION] - P - U - L_PLUS_H_STAR
+after [EXCLAMATORY] - P - U - H_STAR
+
+only - P - U - AUTO
+only [DECLARATIVE] - P - U - H_PLUS_L_STAR
+only [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+only [CONTINUATION] - P - U - L_PLUS_H_STAR
+only [EXCLAMATORY] - P - U - H_STAR
+
+every - P - U - S - AUTO
+every [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+every [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+every [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+every [EXCLAMATORY] - P - U - S - H_STAR
+
+between - U - P - AUTO
+between [DECLARATIVE] - U - P - H_PLUS_L_STAR
+between [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+between [CONTINUATION] - U - P - L_PLUS_H_STAR
+between [EXCLAMATORY] - U - P - H_STAR
+
+into - P - U - AUTO
+into [DECLARATIVE] - P - U - H_PLUS_L_STAR
+into [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+into [CONTINUATION] - P - U - L_PLUS_H_STAR
+into [EXCLAMATORY] - P - U - H_STAR
+
+about - U - P - AUTO
+about [DECLARATIVE] - P - U - H_PLUS_L_STAR
+about [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+about [CONTINUATION] - P - U - L_PLUS_H_STAR
+about [EXCLAMATORY] - P - U - H_STAR
+
+against - U - P - AUTO
+against [DECLARATIVE] - U - P - H_PLUS_L_STAR
+against [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+against [CONTINUATION] - U - P - L_PLUS_H_STAR
+against [EXCLAMATORY] - U - P - H_STAR
+
+during - P - U - AUTO
+during [DECLARATIVE] - P - U - H_PLUS_L_STAR
+during [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+during [CONTINUATION] - P - U - L_PLUS_H_STAR
+during [EXCLAMATORY] - P - U - H_STAR
+
+without - U - P - AUTO
+without [DECLARATIVE] - U - P - H_PLUS_L_STAR
+without [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+without [CONTINUATION] - U - P - L_PLUS_H_STAR
+without [EXCLAMATORY] - U - P - H_STAR
+
+under - P - U - AUTO
+under [DECLARATIVE] - P - U - H_PLUS_L_STAR
+under [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+under [CONTINUATION] - P - U - L_PLUS_H_STAR
+under [EXCLAMATORY] - P - U - H_STAR
+
+over - P - U - AUTO
+over [DECLARATIVE] - P - U - H_PLUS_L_STAR
+over [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+over [CONTINUATION] - P - U - L_PLUS_H_STAR
+over [EXCLAMATORY] - P - U - H_STAR
+
+system - P - U - AUTO
+system [DECLARATIVE] - P - U - H_PLUS_L_STAR
+system [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+system [CONTINUATION] - P - U - L_PLUS_H_STAR
+system [EXCLAMATORY] - P - U - H_STAR
+
+data - P - U - AUTO
+data [DECLARATIVE] - P - U - H_PLUS_L_STAR
+data [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+data [CONTINUATION] - P - U - L_PLUS_H_STAR
+data [EXCLAMATORY] - P - U - H_STAR
+
+input - P - U - AUTO
+input [DECLARATIVE] - P - U - H_PLUS_L_STAR
+input [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+input [CONTINUATION] - P - U - L_PLUS_H_STAR
+input [EXCLAMATORY] - P - U - H_STAR
+
+output - P - U - AUTO
+output [DECLARATIVE] - P - U - H_PLUS_L_STAR
+output [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+output [CONTINUATION] - P - U - L_PLUS_H_STAR
+output [EXCLAMATORY] - P - U - H_STAR
+
+#program (verb)
+program - U - P - AUTO
+program [DECLARATIVE] - U - P - H_PLUS_L_STAR
+program [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+program [CONTINUATION] - U - P - L_PLUS_H_STAR
+
+#program (noun)
+program - P - U - AUTO
+program [DECLARATIVE] - P - U - H_PLUS_L_STAR
+program [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+program [CONTINUATION] - P - U - L_PLUS_H_STAR
+program [EXCLAMATORY] - P - U - H_STAR
+
+command - P - U - AUTO
+command [DECLARATIVE] - P - U - H_PLUS_L_STAR
+command [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+command [CONTINUATION] - P - U - L_PLUS_H_STAR
+command [EXCLAMATORY] - P - U - H_STAR
+
+memory - P - U - S - AUTO
+memory [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+memory [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+memory [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+memory [EXCLAMATORY] - P - U - S - H_STAR
+
+network - P - U - AUTO
+network [DECLARATIVE] - P - U - H_PLUS_L_STAR
+network [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+network [CONTINUATION] - P - U - L_PLUS_H_STAR
+network [EXCLAMATORY] - P - U - H_STAR
+
+server - P - U - AUTO
+server [DECLARATIVE] - P - U - H_PLUS_L_STAR
+server [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+server [CONTINUATION] - P - U - L_PLUS_H_STAR
+server [EXCLAMATORY] - P - U - H_STAR
+
+signal - P - U - AUTO
+signal [DECLARATIVE] - P - U - H_PLUS_L_STAR
+signal [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+signal [CONTINUATION] - P - U - L_PLUS_H_STAR
+signal [EXCLAMATORY] - P - U - H_STAR
+
+process - P - U - AUTO
+process [DECLARATIVE] - P - U - H_PLUS_L_STAR
+process [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+process [CONTINUATION] - P - U - L_PLUS_H_STAR
+process [EXCLAMATORY] - P - U - H_STAR
+
+status - P - U - AUTO
+status [DECLARATIVE] - P - U - H_PLUS_L_STAR
+status [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+status [CONTINUATION] - P - U - L_PLUS_H_STAR
+status [EXCLAMATORY] - P - U - H_STAR
+
+error - P - U - AUTO
+error [DECLARATIVE] - P - U - H_PLUS_L_STAR
+error [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+error [CONTINUATION] - P - U - L_PLUS_H_STAR
+error [EXCLAMATORY] - P - U - H_STAR
+
+access - P - U - AUTO
+access [DECLARATIVE] - P - U - H_PLUS_L_STAR
+access [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+access [CONTINUATION] - P - U - L_PLUS_H_STAR
+access [EXCLAMATORY] - P - U - H_STAR
+
+target - P - U - AUTO
+target [DECLARATIVE] - P - U - H_PLUS_L_STAR
+target [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+target [CONTINUATION] - P - U - L_PLUS_H_STAR
+target [EXCLAMATORY] - P - U - H_STAR
+
+active - P - U - AUTO
+active [DECLARATIVE] - P - U - H_PLUS_L_STAR
+active [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+active [CONTINUATION] - P - U - L_PLUS_H_STAR
+active [EXCLAMATORY] - P - U - H_STAR
+
+online - P - U - AUTO
+online [DECLARATIVE] - P - U - H_PLUS_L_STAR
+online [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+online [CONTINUATION] - P - U - L_PLUS_H_STAR
+online [EXCLAMATORY] - P - U - H_STAR
+
+offline - P - U - AUTO
+offline [DECLARATIVE] - P - U - H_PLUS_L_STAR
+offline [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+offline [CONTINUATION] - P - U - L_PLUS_H_STAR
+offline [EXCLAMATORY] - P - U - H_STAR
+
+ready - P - U - AUTO
+ready [DECLARATIVE] - P - U - H_PLUS_L_STAR
+ready [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+ready [CONTINUATION] - P - U - L_PLUS_H_STAR
+ready [EXCLAMATORY] - P - U - H_STAR
+
+loading - P - U - AUTO
+loading [DECLARATIVE] - P - U - H_PLUS_L_STAR
+loading [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+loading [CONTINUATION] - P - U - L_PLUS_H_STAR
+loading [EXCLAMATORY] - P - U - H_STAR
+
+complete - U - P - AUTO
+complete [DECLARATIVE] - U - P - H_PLUS_L_STAR
+complete [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+complete [CONTINUATION] - U - P - L_PLUS_H_STAR
+complete [EXCLAMATORY] - U - P - H_STAR
+
+warning - U - P - AUTO
+warning [DECLARATIVE] - U - P - H_PLUS_L_STAR
+warning [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+warning [CONTINUATION] - U - P - L_PLUS_H_STAR
+warning [EXCLAMATORY] - U - P - H_STAR
+
+alert - U - P - AUTO
+alert [DECLARATIVE] - U - P - H_PLUS_L_STAR
+alert [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+alert [CONTINUATION] - U - P - L_PLUS_H_STAR
+alert [EXCLAMATORY] - U - P - H_STAR
+
+mission - P - U - AUTO
+mission [DECLARATIVE] - P - U - H_PLUS_L_STAR
+mission [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+mission [CONTINUATION] - P - U - L_PLUS_H_STAR
+mission [EXCLAMATORY] - P - U - H_STAR
+
+operation - U - P - S - U - AUTO
+operation [DECLARATIVE] - U - P - S - U - H_PLUS_L_STAR
+operation [INTERROGATIVE] - U - P - S - U - L_PLUS_H_STAR
+operation [CONTINUATION] - U - P - S - U - L_PLUS_H_STAR
+operation [EXCLAMATORY] - U - P - S - U - H_STAR
+
+confirmed - U - P - AUTO
+confirmed [DECLARATIVE] - U - P - H_PLUS_L_STAR
+confirmed [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+confirmed [CONTINUATION] - U - P - L_PLUS_H_STAR
+confirmed [EXCLAMATORY] - U - P - H_STAR
+
+negative - P - U - S - AUTO
+negative [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+negative [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+negative [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+negative [EXCLAMATORY] - P - U - S - H_STAR
+
+affirmative - U - P - U - S - AUTO
+affirmative [DECLARATIVE] - U - P - U - S - H_PLUS_L_STAR
+affirmative [INTERROGATIVE] - U - P - U - S - L_PLUS_H_STAR
+affirmative [CONTINUATION] - U - P - U - S - L_PLUS_H_STAR
+affirmative [EXCLAMATORY] - U - P - U - S - H_STAR
+
+current - P - U - AUTO
+current [DECLARATIVE] - P - U - H_PLUS_L_STAR
+current [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+current [CONTINUATION] - P - U - L_PLUS_H_STAR
+current [EXCLAMATORY] - P - U - H_STAR
+
+beginning - U - P - S - AUTO
+beginning [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+beginning [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+beginning [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+beginning [EXCLAMATORY] - U - P - S - H_STAR
+
+sequence - U - P - AUTO
+sequence [DECLARATIVE] - U - P - H_PLUS_L_STAR
+sequence [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+sequence [CONTINUATION] - U - P - L_PLUS_H_STAR
+sequence [EXCLAMATORY] - U - P - H_STAR
+
+machine - U - P - AUTO
+machine [DECLARATIVE] - U - P - H_PLUS_L_STAR
+machine [INTERROGATIVE] - U - P - L_PLUS_H_STAR
+machine [CONTINUATION] - U - P - L_PLUS_H_STAR
+machine [EXCLAMATORY] - U - P - H_STAR
+
+initialize - U - P - U - U - S - AUTO
+initialize [DECLARATIVE] - U - P - U - U - S - H_PLUS_L_STAR
+initialize [INTERROGATIVE] - U - P - U - U - S - L_PLUS_H_STAR
+initialize [CONTINUATION] - U - P - U - U - S - L_PLUS_H_STAR
+initialize [EXCLAMATORY] - U - P - U - U - S - H_STAR
+
+initializing - U - P - U - U - S - U - AUTO
+initializing [DECLARATIVE] - U - P - U - U - S - U - H_PLUS_L_STAR
+initializing [INTERROGATIVE] - U - P - U - U - S - U - L_PLUS_H_STAR
+initializing [CONTINUATION] - U - P - U - U - S - U - L_PLUS_H_STAR
+initializing [EXCLAMATORY] - U - P - U - U - S - U - H_STAR
+
+initialized - U - P - U - U - S - AUTO
+initialized [DECLARATIVE] - U - P - U - U - S - H_PLUS_L_STAR
+initialized [INTERROGATIVE] - U - P - U - U - S - L_PLUS_H_STAR
+initialized [CONTINUATION] - U - P - U - U - S - L_PLUS_H_STAR
+initialized [EXCLAMATORY] - U - P - U - U - S - H_STAR
+
+successfully - U - P - S - U - AUTO
+successfully [DECLARATIVE] - U - P - S - U - H_PLUS_L_STAR
+successfully [INTERROGATIVE] - U - P - S - U - L_PLUS_H_STAR
+successfully [CONTINUATION] - U - P - S - U - L_PLUS_H_STAR
+successfully [EXCLAMATORY] - U - P - S - U - H_STAR
+
+dialogue - P - U - S - AUTO
+dialogue [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+dialogue [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+dialogue [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+dialogue [EXCLAMATORY] - P - U - S - H_STAR
+
+finalized - P - U - S - AUTO
+finalized [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+finalized [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+finalized [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+finalized [EXCLAMATORY] - P - U - S - H_STAR
+
+entering - P - U - S - AUTO
+entering [DECLARATIVE] - P - U - S - H_PLUS_L_STAR
+entering [INTERROGATIVE] - P - U - S - L_PLUS_H_STAR
+entering [CONTINUATION] - P - U - S - L_PLUS_H_STAR
+entering [EXCLAMATORY] - P - U - S - H_STAR
+
+brainstem - P - U - AUTO
+brainstem [DECLARATIVE] - P - U - H_PLUS_L_STAR
+brainstem [INTERROGATIVE] - P - U - L_PLUS_H_STAR
+brainstem [CONTINUATION] - P - U - L_PLUS_H_STAR
+brainstem [EXCLAMATORY] - P - U - H_STAR
+
+directive - U - P - S - AUTO
+directive [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+directive [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+directive [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+directive [EXCLAMATORY] - U - P - S - H_STAR
+
+directives - U - P - S - AUTO
+directives [DECLARATIVE] - U - P - S - H_PLUS_L_STAR
+directives [INTERROGATIVE] - U - P - S - L_PLUS_H_STAR
+directives [CONTINUATION] - U - P - S - L_PLUS_H_STAR
+directives [EXCLAMATORY] - U - P - S - H_STAR
+

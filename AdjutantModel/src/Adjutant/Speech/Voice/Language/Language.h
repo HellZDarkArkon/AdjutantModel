@@ -13,6 +13,7 @@
 #include "../Vocalics/FootParser.h"
 #include "../Vocalics/MoraicGrid.h"
 #include "../Vocalics/IntonationModel.h"
+#include "LanguageCortex.h"
 
 #include <string>
 #include <fstream>
@@ -253,6 +254,12 @@ public:
 	}
 
 	// -----------------------------------------------------------------------
+	// -----------------------------------------------------------------------
+	// Language Cortex accessor — feature extraction and GPU learning pipeline
+	// -----------------------------------------------------------------------
+	LanguageCortex&       GetCortex()       { return mCortex; }
+	const LanguageCortex& GetCortex() const { return mCortex; }
+
 	// Pipeline accessors — return configured instances ready for use
 	// -----------------------------------------------------------------------
 	SyllableBuilder&       GetSyllableBuilder()       { return mSyllableBuilder; }
@@ -286,11 +293,12 @@ private:
 	LanguageRules    mRules;
 
 	// Owned, fully configured pipeline instances
-	SyllableBuilder  mSyllableBuilder;
-	FootParser       mFootParser;
-	MoraicGrid       mMoraicGrid;
-	IntonationModel  mIntonationModel;
+	SyllableBuilder    mSyllableBuilder;
+	FootParser         mFootParser;
+	MoraicGrid         mMoraicGrid;
+	IntonationModel    mIntonationModel;
 	LanguageDictionary mDict;
+	LanguageCortex     mCortex;
 
 	// -----------------------------------------------------------------------
 	// Push rule structs into the owned pipeline instances

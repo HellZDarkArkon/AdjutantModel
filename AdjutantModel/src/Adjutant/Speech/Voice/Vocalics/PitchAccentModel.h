@@ -29,6 +29,8 @@ enum class PitchAccentType
     L_STAR,
     L_PLUS_H_STAR,
     H_PLUS_L_STAR,
+    DOWNSTEP_H,
+    AUTO          // sentinel: delegate to PitchAccentModel::Assign() (never stored as a result)
     DOWNSTEP_H
 };
 
@@ -99,6 +101,46 @@ public:
         // --- Step 2: coarticulation ----------------------------------------
         // Walk the accent sequence; skip NONE syllables.  For each adjacent
         // pair of accented syllables, look up the rule and scale the later one.
+        PitchAccentType prevAccent = PitchAccentType::NONE;
+        for (int i = 0; i < n; ++i)
+        {
+            if (accents[i] == PitchAccentType::NONE) continue;
+
+            if (prevAccent != PitchAccentType::NONE)
+                phraseF0Bases[i] *= CoarticScale(prevAccent, accents[i]);
+
+            prevAccent = accents[i];
+        }
+    }
+
+    // Overload that accepts per-syllable pitch accent overrides from the
+    // prosody dictionary.  For each index i where accentOverrides[i] is not
+    // AUTO, that value replaces the algorithmic Assign() result before
+    // coarticulation is propagated to neighbouring accented syllables.
+    void Apply(const std::vector<StressLevel>&    stressLevels,
+               const std::vector<double>&         tPhrasePerSyl,
+               PhraseType                         phraseType,
+               std::vector<double>&               phraseF0Bases,
+               const std::vector<PitchAccentType>& accentOverrides) const
+    {
+        const int n = (int)stressLevels.size();
+        if (n == 0) return;
+
+        std::vector<PitchAccentType> accents(n, PitchAccentType::NONE);
+        PitchAccentType prevPrimary = PitchAccentType::NONE;
+
+        for (int i = 0; i < n; ++i)
+        {
+            bool hasOverride = i < (int)accentOverrides.size()
+                            && accentOverrides[i] != PitchAccentType::AUTO;
+            accents[i] = hasOverride
+                       ? accentOverrides[i]
+                       : Assign(stressLevels[i], tPhrasePerSyl[i],
+                                phraseType, prevPrimary);
+            if (stressLevels[i] == StressLevel::PRIMARY)
+                prevPrimary = accents[i];
+        }
+
         PitchAccentType prevAccent = PitchAccentType::NONE;
         for (int i = 0; i < n; ++i)
         {
